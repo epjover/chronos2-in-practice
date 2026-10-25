@@ -1,0 +1,4 @@
+benchmark,leader,leader_score,runner_up,runner_up_score,lead_points
+fev-bench,Chronos-2,47.3,TiRex,42.6,4.7
+GIFT-Eval,Chronos-2,51.4,TimesFM-2.5,51.0,0.4
+Chronos Benchmark II,Chronos-2,46.6,TimesFM-2.5,42.4,4.2

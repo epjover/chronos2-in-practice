@@ -1,0 +1,12 @@
+# Build context of deploy/fastapi/Dockerfile (BuildKit reads <Dockerfile>.dockerignore next to the
+# Dockerfile instead of the root .dockerignore). Allowlist: exclude everything, then add back only
+# what the image needs. .git, .venv, data/, results/, models/, notebooks, PLAN.md and CLAUDE.md
+# therefore never reach the Docker daemon.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!deploy/fastapi/app.py
+**/__pycache__
+**/*.py[cod]

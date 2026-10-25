@@ -1,0 +1,465 @@
+"""Baseline forecasters behind the shared ``Forecaster`` protocol.
+
+- ``SeasonalNaive``: repeats the last season (the reference of every skill score).
+- ``AutoETS``: automatic exponential smoothing from statsforecast.
+- ``ChronosBolt``: the previous Chronos generation, univariate only.
+
+All baselines are univariate: each (item, target) pair is forecast on its own, multiple targets
+are handled by a loop, and covariate columns and ``future_covariates`` are ignored.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+import pandas as pd
+from statsforecast import StatsForecast
+from statsforecast import models as sf_models
+
+from c2p.models import (
+    CHRONOS_BOLT_BASE,
+    finalize_forecast,
+    load_chronos_bolt,
+    validate_forecast_inputs,
+    warn_untrained_levels,
+)
+from c2p.schema import (
+    ID_COL,
+    PREDICTION_COL,
+    TARGET_COL,
+    TARGET_NAME_COL,
+    TIMESTAMP_COL,
+    quantile_col,
+)
+
+if TYPE_CHECKING:
+    from chronos import ChronosBoltPipeline
+
+# statsforecast's ETS only fits seasonal models up to this period; above it, AutoETS silently
+# falls back to a non-seasonal model.
+_MAX_ETS_SEASON_LENGTH = 24
+# statsforecast's ETS refuses shorter series (NotImplementedError: "tiny datasets").
+_MIN_ETS_POINTS = 7
+
+
+# --------------------------------------------------------------------------------------------
+# statsforecast output -> forecast frame
+# --------------------------------------------------------------------------------------------
+
+
+def _interval_level(quantile_level: float) -> int | float:
+    """statsforecast ``level`` (in %) of the central interval bounded by ``quantile_level``.
+
+    Level L has bounds at quantiles (1 - L/100) / 2 and 1 - (1 - L/100) / 2, so the 0.1 and 0.9
+    quantiles are the bounds of the 80% interval. Rounded so 0.15 maps to 70, not 70.00000000001.
+    """
+    level = round(abs(2 * quantile_level - 1) * 100, 8)
+    return int(level) if level.is_integer() else level
+
+
+def _statsforecast_levels(quantile_levels: Sequence[float]) -> list[int | float]:
+    """Interval levels to request so that every quantile except the median is a bound."""
+    return sorted({_interval_level(q) for q in quantile_levels if q != 0.5})
+
+
+def _statsforecast_column(alias: str, quantile_level: float) -> str:
+    """Column of a statsforecast output holding ``quantile_level`` (median = point forecast)."""
+    if quantile_level == 0.5:
+        return alias
+    side = "lo" if quantile_level < 0.5 else "hi"
+    return f"{alias}-{side}-{_interval_level(quantile_level)}"
+
+
+def _from_statsforecast(
+    raw: pd.DataFrame, *, alias: str, target: str, quantile_levels: Sequence[float]
+) -> pd.DataFrame:
+    """Convert a statsforecast frame (columns ``alias``, ``alias-lo-80``, ...) to a forecast frame.
+
+    The point forecast becomes ``predictions`` and the 0.5 quantile. Quantiles are sorted across
+    levels for every row, so they are monotone even if a model returned crossing intervals (a
+    no-op for the symmetric normal intervals of SeasonalNaive and AutoETS).
+    """
+    values = np.column_stack(
+        [raw[_statsforecast_column(alias, q)].to_numpy(dtype="float64") for q in quantile_levels]
+    )
+    order = np.argsort(quantile_levels)
+    values[:, order] = np.sort(values[:, order], axis=1)
+    columns = {
+        ID_COL: raw[ID_COL].to_numpy(),
+        TIMESTAMP_COL: raw[TIMESTAMP_COL].to_numpy(),
+        TARGET_NAME_COL: target,
+        PREDICTION_COL: raw[alias].to_numpy(dtype="float64"),
+    }
+    quantiles = {quantile_col(q): values[:, i] for i, q in enumerate(quantile_levels)}
+    return pd.DataFrame(columns | quantiles)
+
+
+class _StatsForecastBaseline(ABC):
+    """Shared ``predict`` of the statsforecast baselines: one StatsForecast call per target."""
+
+    name: str
+
+    @abstractmethod
+    def _model(self) -> Any:
+        """The statsforecast model instance to fit (its ``alias`` names the output columns)."""
+
+    @abstractmethod
+    def _prepare_series(self, values: np.ndarray, label: str) -> np.ndarray:
+        """Check one series and return the values given to statsforecast.
+
+        The result may drop the oldest values: it is aligned with the most recent timestamps.
+        ``label`` names the (item, target) pair in error messages.
+        """
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Forecast each (item, target) independently; ``future_covariates`` is ignored."""
+        targets, levels = validate_forecast_inputs(
+            context,
+            target=target,
+            quantile_levels=quantile_levels,
+            prediction_length=prediction_length,
+            freq=freq,
+        )
+        frames = [
+            self._predict_target(context, name, prediction_length, levels, freq) for name in targets
+        ]
+        return finalize_forecast(
+            pd.concat(frames, ignore_index=True),
+            context=context,
+            targets=targets,
+            quantile_levels=levels,
+            prediction_length=prediction_length,
+            freq=freq,
+            model_name=self.name,
+        )
+
+    def _predict_target(
+        self,
+        context: pd.DataFrame,
+        target: str,
+        prediction_length: int,
+        quantile_levels: list[float],
+        freq: str,
+    ) -> pd.DataFrame:
+        model = self._model()
+        series = self._prepare(context[[ID_COL, TIMESTAMP_COL, target]], target)
+        raw = StatsForecast(models=[model], freq=freq).forecast(
+            h=prediction_length,
+            df=series,
+            level=_statsforecast_levels(quantile_levels) or None,
+            id_col=ID_COL,
+            time_col=TIMESTAMP_COL,
+            target_col=target,
+        )
+        return _from_statsforecast(
+            raw, alias=model.alias, target=target, quantile_levels=quantile_levels
+        )
+
+    def _prepare(self, series: pd.DataFrame, target: str) -> pd.DataFrame:
+        """Return the (id, timestamp, target) frame given to statsforecast, series by series."""
+        parts = []
+        for item_id, group in series.groupby(ID_COL, sort=False):
+            label = f"{item_id!r}/{target!r}"
+            values = self._prepare_series(group[target].to_numpy(dtype="float64"), label)
+            parts.append(group.tail(len(values)).assign(**{target: values}))
+        return pd.concat(parts, ignore_index=True)
+
+
+# --------------------------------------------------------------------------------------------
+# Seasonal naive
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SeasonalNaive(_StatsForecastBaseline):
+    """Seasonal naive: every step repeats the value observed one season earlier.
+
+    This is statsforecast's ``SeasonalNaive`` with its native normal intervals, the baseline
+    fev-bench uses for its skill scores. We checked the alternative of empirical residual
+    quantiles and kept statsforecast for comparability with the paper: its quantiles are
+    ``point + z_q * sigma * sqrt(k)``, where ``sigma`` is the RMS of the in-sample seasonal
+    differences ``y[t] - y[t - season_length]`` and ``k`` is the season the step falls in
+    (1 for the first ``season_length`` steps). They are symmetric around the point forecast
+    (so the median equals ``predictions``), monotone across levels and widen with the horizon.
+
+    Missing values: statsforecast copies the last season verbatim, so a NaN there would become
+    a NaN forecast. Only NaNs in the last season are filled, each with the latest observed value
+    at the same position of the season (what seasonal naive would have predicted for it).
+    statsforecast divides the squared differences by ``n - season_length``, counting missing
+    differences (and the exact zeros the fill creates) as zeros, so ``sigma`` would shrink as
+    the share of NaN grows; the intervals are rescaled so that ``sigma`` is the RMS of the
+    observed differences only. On a complete series nothing changes (fev-bench parity). Each
+    series needs at least one pair of observed values one season apart.
+
+    Parameters
+    ----------
+    season_length
+        Steps per season, e.g. 24 for a daily cycle in hourly data or 168 for a weekly one.
+    name
+        Model name used in results tables.
+    """
+
+    season_length: int
+    name: str = "seasonal_naive"
+
+    def __post_init__(self) -> None:
+        if self.season_length < 1:
+            raise ValueError(f"season_length must be >= 1, got {self.season_length}.")
+
+    def _model(self) -> sf_models.SeasonalNaive:
+        return sf_models.SeasonalNaive(season_length=self.season_length, alias="SeasonalNaive")
+
+    def _prepare_series(self, values: np.ndarray, label: str) -> np.ndarray:
+        if _count_seasonal_differences(values, self.season_length) == 0:
+            raise ValueError(
+                f"Series {label} has no two observed values one season ({self.season_length} "
+                f"steps) apart among its {len(values)} points, so seasonal naive cannot estimate "
+                "its intervals. Provide more than one season of context."
+            )
+        return _fill_last_season(values, self.season_length, label=label)
+
+    def _predict_target(
+        self,
+        context: pd.DataFrame,
+        target: str,
+        prediction_length: int,
+        quantile_levels: list[float],
+        freq: str,
+    ) -> pd.DataFrame:
+        forecast = super()._predict_target(
+            context, target, prediction_length, quantile_levels, freq
+        )
+        scales = {
+            item_id: _observed_sigma_scale(values.to_numpy(dtype="float64"), self.season_length)
+            for item_id, values in context.groupby(ID_COL, sort=False)[target]
+        }
+        point = forecast[PREDICTION_COL].to_numpy()
+        scale = forecast[ID_COL].map(scales).to_numpy(dtype="float64")
+        rescaled = {
+            quantile_col(q): point + (forecast[quantile_col(q)].to_numpy() - point) * scale
+            for q in quantile_levels
+        }
+        return forecast.assign(**rescaled)
+
+
+def _count_seasonal_differences(values: np.ndarray, season_length: int) -> int:
+    """Number of observed seasonal differences ``y[t] - y[t - season_length]``."""
+    return int(np.isfinite(values[season_length:] - values[:-season_length]).sum())
+
+
+def _observed_sigma_scale(values: np.ndarray, season_length: int) -> float:
+    """Factor turning statsforecast's seasonal-naive ``sigma`` into the RMS of observed differences.
+
+    statsforecast divides the sum of squared differences by ``n - season_length`` although only
+    ``n_observed`` of them are observed; the rest are NaN or zeros created by filling the last
+    season. Hence the factor ``sqrt((n - season_length) / n_observed)``, 1 for a complete series.
+    """
+    n_observed = _count_seasonal_differences(values, season_length)
+    return float(np.sqrt((len(values) - season_length) / n_observed))
+
+
+def _fill_last_season(values: np.ndarray, season_length: int, *, label: str) -> np.ndarray:
+    """Fill NaNs of the last season with the latest observed value at the same seasonal position."""
+    position = np.arange(len(values)) % season_length
+    latest = pd.Series(values).groupby(position).ffill().to_numpy()
+    filled = values.copy()
+    filled[-season_length:] = latest[-season_length:]
+    unobserved = int(np.isnan(filled[-season_length:]).sum())
+    if unobserved:
+        raise ValueError(
+            f"Series {label} has never been observed at {unobserved} of the {season_length} "
+            "positions of the season, so seasonal naive cannot forecast them."
+        )
+    return filled
+
+
+# --------------------------------------------------------------------------------------------
+# AutoETS
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AutoETS(_StatsForecastBaseline):
+    """Automatic exponential smoothing (statsforecast ``AutoETS``) with normal intervals.
+
+    The model (error, trend and season types) is chosen per series by AICc. Intervals from
+    ``level=`` are converted to quantiles: level L gives the quantiles (1 - L/100) / 2 and
+    1 - (1 - L/100) / 2, and the point forecast is used as the median.
+
+    Missing values: statsforecast's ETS fails on NaN, so, *only inside this baseline*, NaNs are
+    filled by linear interpolation (leading and trailing NaNs take the nearest observed value).
+
+    Short contexts: each series needs at least ``min_context`` points (two seasons, and at least
+    7). With fewer, the seasonal component has about as many parameters as there are points (or
+    cannot be fitted at all) and statsforecast silently fits a non-seasonal model, so this is
+    an error. With only a few seasons, AICc may still prefer a non-seasonal model; that is model
+    selection, not a fallback.
+
+    Parameters
+    ----------
+    season_length
+        Steps per season, at most 24: statsforecast cannot fit seasonal ETS models with longer
+        seasons and would silently fit a non-seasonal one (use 24 for hourly data).
+    name
+        Model name used in results tables.
+    max_context
+        Fit on the last ``max_context`` steps of each series only (fitting time grows with the
+        length); the default 2,016 is 12 weeks of hourly data. ``None`` uses the whole context.
+        Must be at least ``min_context``.
+    """
+
+    season_length: int
+    name: str = "auto_ets"
+    max_context: int | None = 2016
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.season_length <= _MAX_ETS_SEASON_LENGTH:
+            raise ValueError(
+                f"season_length must be in [1, {_MAX_ETS_SEASON_LENGTH}], got "
+                f"{self.season_length}: statsforecast drops the seasonal component of ETS models "
+                "with longer seasons. Use season_length=24 for hourly data."
+            )
+        if self.max_context is not None and self.max_context < self.min_context:
+            raise ValueError(
+                f"max_context must be at least {self.min_context} (two seasons of "
+                f"{self.season_length} steps, and at least {_MIN_ETS_POINTS}), "
+                f"got {self.max_context}."
+            )
+
+    @property
+    def min_context(self) -> int:
+        """Fewest points per series: two seasons, and statsforecast's minimum of 7."""
+        return max(2 * self.season_length, _MIN_ETS_POINTS)
+
+    def _model(self) -> sf_models.AutoETS:
+        return sf_models.AutoETS(season_length=self.season_length, alias="AutoETS")
+
+    def _prepare_series(self, values: np.ndarray, label: str) -> np.ndarray:
+        if self.max_context is not None:
+            values = values[-self.max_context :]
+        if len(values) < self.min_context:
+            raise ValueError(
+                f"Series {label} has {len(values)} points, but AutoETS(season_length="
+                f"{self.season_length}) needs at least {self.min_context}: with fewer than two "
+                "seasons the seasonal component cannot be estimated and statsforecast silently "
+                "fits a non-seasonal model."
+            )
+        return _interpolate_linear(values, label=label)
+
+
+def _interpolate_linear(values: np.ndarray, *, label: str) -> np.ndarray:
+    """Linearly interpolate NaNs; leading/trailing NaNs take the nearest observed value."""
+    if np.isnan(values).all():
+        raise ValueError(f"Series {label} has no observed values in the context.")
+    filled = pd.Series(values).interpolate(method="linear", limit_direction="both")
+    return filled.to_numpy()
+
+
+# --------------------------------------------------------------------------------------------
+# Chronos-Bolt
+# --------------------------------------------------------------------------------------------
+
+
+class ChronosBolt:
+    """Chronos-Bolt (``amazon/chronos-bolt-*``) as a univariate zero-shot baseline.
+
+    Uses the pipeline's own ``predict_df`` once per target, passing ``freq`` (after checking the
+    regular grid, since ``freq`` disables the library's gap detection) and only the id, timestamp
+    and target columns: Bolt has no covariate support.
+
+    Bolt natively predicts the quantiles 0.1, 0.2, ..., 0.9. Levels in between are interpolated by
+    the library; levels outside [0.1, 0.9] are clamped (``ChronosBoltPipeline.predict_quantiles``
+    pads the trained quantiles with copies of the 0.1 and 0.9 ones before interpolating), so e.g.
+    the 0.01 and 0.99 quantiles equal the 0.1 and 0.9 ones and a 98% interval is really the 80%
+    one. They are returned as produced and a warning is logged.
+
+    Parameters
+    ----------
+    pipeline
+        A loaded ``ChronosBoltPipeline``; when ``None`` it is loaded from ``model_id``.
+    model_id
+        Hub id or local path, used only when ``pipeline`` is ``None``.
+    device
+        ``"cpu"`` or ``"cuda"`` for loading; ``None`` uses ``c2p.config.get_device()``.
+    name
+        Model name used in results tables.
+    """
+
+    def __init__(
+        self,
+        pipeline: ChronosBoltPipeline | None = None,
+        *,
+        model_id: str = CHRONOS_BOLT_BASE,
+        device: str | None = None,
+        name: str = "chronos-bolt",
+    ) -> None:
+        from chronos import ChronosBoltPipeline
+
+        if pipeline is None:
+            pipeline = load_chronos_bolt(model_id, device=device)
+        elif device is not None or model_id != CHRONOS_BOLT_BASE:
+            raise ValueError("Pass either a loaded pipeline or model_id/device to load, not both.")
+        if not isinstance(pipeline, ChronosBoltPipeline):
+            raise TypeError(
+                f"Expected a ChronosBoltPipeline, got {type(pipeline).__name__}. "
+                "Use c2p.models.Chronos2Forecaster for Chronos-2 models."
+            )
+        self.pipeline = pipeline
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"ChronosBolt(name={self.name!r})"
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Forecast each (item, target) independently; ``future_covariates`` is ignored."""
+        targets, levels = validate_forecast_inputs(
+            context,
+            target=target,
+            quantile_levels=quantile_levels,
+            prediction_length=prediction_length,
+            freq=freq,
+        )
+        warn_untrained_levels(levels, self.pipeline.quantiles, model_name=self.name)
+        frames = [
+            self.pipeline.predict_df(
+                context[[ID_COL, TIMESTAMP_COL, name]],
+                id_column=ID_COL,
+                timestamp_column=TIMESTAMP_COL,
+                target=name,
+                prediction_length=prediction_length,
+                quantile_levels=levels,
+                freq=freq,
+            )
+            for name in targets
+        ]
+        return finalize_forecast(
+            pd.concat(frames, ignore_index=True),
+            context=context,
+            targets=targets,
+            quantile_levels=levels,
+            prediction_length=prediction_length,
+            freq=freq,
+            model_name=self.name,
+        )

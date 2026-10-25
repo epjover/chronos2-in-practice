@@ -1,0 +1,1053 @@
+"""Rolling-origin backtests that cannot leak the future, scored with fev metrics.
+
+A backtest replays history: pick a cutoff, give the model everything up to it, ask for the
+next ``prediction_length`` steps, compare with what really happened, move the cutoff forward
+and repeat. Three rules keep it honest, and this module enforces them by construction:
+
+1. The forecaster only receives rows with ``timestamp <= cutoff`` (the *context*).
+2. For the horizon it only receives ``item_id``, ``timestamp`` and the columns declared as
+   ``known_covariates``; targets and past-only covariates never cross the cutoff.
+3. Actuals are joined to the forecasts *after* the forecaster has answered.
+
+Metrics come from ``fev`` (the library behind fev-bench, used in the Chronos-2 paper) with
+fev-bench's settings, so every window is scored the way fev-bench scores a task. Skill scores
+here are computed over the windows of one dataset, not over fev-bench's tasks, so they are not
+the paper's leaderboard numbers. MASE and SQL are scaled with each window's own context, never
+with data after the cutoff.
+
+Example::
+
+    config = BacktestConfig(prediction_length=24, n_windows=20, freq="h", season_length=24)
+    forecasts = pd.concat([backtest(model, df, config) for model in (chronos, naive)])
+    metrics = evaluate(forecasts, df, config)  # one row per (model, window)
+    summarize(metrics)
+    skill_table(metrics, baseline="seasonal_naive")
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+import warnings
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import asdict, dataclass, replace
+from itertools import pairwise
+from numbers import Integral
+
+import numpy as np
+import pandas as pd
+import scipy.stats
+from fev.analysis import bootstrap
+from fev.metrics import MASE, SQL, WAPE, WQL, Metric
+from pandas.tseries.frequencies import to_offset
+
+from c2p.config import SEED
+from c2p.schema import (
+    EVAL_QUANTILES,
+    ID_COL,
+    INTERVALS,
+    PREDICTION_COL,
+    TARGET_COL,
+    TARGET_NAME_COL,
+    TIMESTAMP_COL,
+    Forecaster,
+    quantile_col,
+)
+
+__all__ = [
+    "ACTUAL_COL",
+    "COVERAGE_COLUMNS",
+    "CUTOFF_COL",
+    "METRICS",
+    "MODEL_COL",
+    "N_SERIES_COL",
+    "SCORED_QUANTILES",
+    "SECONDS_COL",
+    "WINDOW_COL",
+    "BacktestConfig",
+    "SkillScore",
+    "Window",
+    "backtest",
+    "coverage_column",
+    "evaluate",
+    "iter_windows",
+    "rolling_origin_windows",
+    "skill_score",
+    "skill_table",
+    "summarize",
+]
+
+logger = logging.getLogger(__name__)
+
+WINDOW_COL = "window"
+CUTOFF_COL = "cutoff"
+MODEL_COL = "model"
+ACTUAL_COL = "actual"
+SECONDS_COL = "seconds"
+N_SERIES_COL = "n_series"
+
+# fev-bench settings: epsilon=1.0 keeps WQL and WAPE finite for series close to zero.
+METRICS: Mapping[str, Metric] = {
+    "WQL": WQL(epsilon=1.0),
+    "MASE": MASE(),
+    "WAPE": WAPE(epsilon=1.0),
+    "SQL": SQL(),
+}
+# fev-bench scores WQL and SQL on the nine deciles. Other requested levels (the 0.01 and 0.99
+# tails of EVAL_QUANTILES) are only used for coverage.
+SCORED_QUANTILES: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+_SCORED_COLUMNS = [quantile_col(level) for level in SCORED_QUANTILES]
+
+# Row order of a scored window: lets fev reshape the long frame into [series, horizon] arrays.
+_SERIES_ORDER = [ID_COL, TARGET_NAME_COL, TIMESTAMP_COL]
+_REPORTED_ACTUAL = "_reported_actual"
+
+
+def coverage_column(level: float) -> str:
+    """Name of the coverage column of a nominal interval level, e.g. ``0.8 -> "coverage_80"``."""
+    return f"coverage_{round(level * 100, 6):g}"
+
+
+COVERAGE_COLUMNS: tuple[str, ...] = tuple(coverage_column(level) for level in INTERVALS)
+
+
+# --------------------------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BacktestConfig:
+    """Settings of a rolling-origin backtest.
+
+    Parameters
+    ----------
+    prediction_length
+        Forecast horizon in steps.
+    n_windows
+        Number of forecast origins (cutoffs).
+    freq
+        Pandas frequency of the series grid, e.g. ``"h"``.
+    season_length
+        Seasonal period that scales MASE and SQL (24 for hourly data with a daily cycle).
+    step
+        Steps between consecutive cutoffs. ``None`` (the default) means ``prediction_length``:
+        horizons that touch without overlapping. Use :attr:`stride` for the resolved value; it
+        keeps following ``prediction_length`` through ``dataclasses.replace``.
+    quantile_levels
+        Levels requested from every forecaster. Must contain the deciles of
+        ``SCORED_QUANTILES`` (scored by WQL and SQL, as in fev-bench) and the bounds of every
+        interval in ``INTERVALS`` (used for coverage).
+    target
+        Target column, or a tuple of target columns. ``item_id``, ``timestamp`` and
+        ``actual`` are reserved names.
+    known_covariates
+        Columns whose future values are known in advance (calendar, published forecasts...).
+        Only these reach the forecaster for the horizon; other columns are past-only.
+    max_context
+        If set, each window's context keeps only the last ``max_context`` rows per series.
+    """
+
+    prediction_length: int
+    n_windows: int
+    freq: str
+    season_length: int
+    step: int | None = None
+    quantile_levels: tuple[float, ...] = EVAL_QUANTILES
+    target: str | tuple[str, ...] = TARGET_COL
+    known_covariates: tuple[str, ...] = ()
+    max_context: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("prediction_length", "n_windows", "season_length"):
+            self._normalize(name, _positive_int(name, getattr(self, name)))
+        if self.step is not None:  # None stays None: `stride` resolves it
+            self._normalize("step", _positive_int("step", self.step))
+        self._normalize("freq", _valid_freq(self.freq))
+        self._normalize("quantile_levels", _valid_quantile_levels(self.quantile_levels))
+        self._normalize("target", _valid_target(self.target))
+        self._normalize(
+            "known_covariates", _valid_known_covariates(self.known_covariates, self.targets)
+        )
+        if self.max_context is not None:
+            self._normalize("max_context", _valid_max_context(self.max_context, self.season_length))
+
+    def _normalize(self, name: str, value: object) -> None:
+        # The dataclass is frozen; normalising validated inputs once at construction is the
+        # documented way to set fields from __post_init__.
+        object.__setattr__(self, name, value)
+
+    @property
+    def stride(self) -> int:
+        """Steps between consecutive cutoffs: ``step``, or ``prediction_length`` if unset."""
+        return self.prediction_length if self.step is None else self.step
+
+    @property
+    def targets(self) -> tuple[str, ...]:
+        """Target columns as a tuple, also for a single target."""
+        return (self.target,) if isinstance(self.target, str) else self.target
+
+    @property
+    def quantile_columns(self) -> tuple[str, ...]:
+        """Forecast-frame column names of ``quantile_levels``."""
+        return tuple(quantile_col(level) for level in self.quantile_levels)
+
+    @property
+    def min_series_length(self) -> int:
+        """Rows a series needs: ``season_length + 1`` context points plus every horizon."""
+        return self.season_length + 1 + self.prediction_length + (self.n_windows - 1) * self.stride
+
+
+def _positive_int(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+    return int(value)
+
+
+def _valid_freq(freq: object) -> str:
+    if not isinstance(freq, str) or not freq:
+        raise ValueError(f"freq must be a pandas frequency string such as 'h', got {freq!r}.")
+    try:
+        to_offset(freq)
+    except ValueError as err:
+        raise ValueError(f"freq={freq!r} is not a valid pandas frequency ('h', 'D', ...).") from err
+    return freq
+
+
+def _valid_quantile_levels(levels: Sequence[float]) -> tuple[float, ...]:
+    normalized = tuple(float(level) for level in levels)
+    if not normalized:
+        raise ValueError("quantile_levels must not be empty.")
+    if outside := [level for level in normalized if not 0.0 < level < 1.0]:
+        raise ValueError(f"quantile_levels must be in (0, 1), got {outside}.")
+    if any(later <= earlier for earlier, later in pairwise(normalized)):
+        raise ValueError(f"quantile_levels must be sorted and unique, got {list(normalized)}.")
+    interval_bounds = {bound for bounds in INTERVALS.values() for bound in bounds}
+    if missing := sorted((set(SCORED_QUANTILES) | interval_bounds) - set(normalized)):
+        raise ValueError(
+            f"quantile_levels must include the deciles {list(SCORED_QUANTILES)} (scored by WQL "
+            f"and SQL, as in fev-bench) and the interval bounds {sorted(interval_bounds)} "
+            f"(used for coverage); missing {missing}."
+        )
+    return normalized
+
+
+def _valid_target(target: str | Sequence[str]) -> str | tuple[str, ...]:
+    names = (target,) if isinstance(target, str) else tuple(target)
+    if not names or not all(isinstance(name, str) and name for name in names):
+        raise ValueError(f"target must be a column name or a sequence of names, got {target!r}.")
+    if len(set(names)) != len(names):
+        raise ValueError(f"target contains duplicated names: {list(names)}.")
+    if reserved := sorted(set(names) & {ID_COL, TIMESTAMP_COL, ACTUAL_COL}):
+        raise ValueError(
+            f"target cannot be named {reserved}: the backtest uses these names for the id, "
+            "the timestamp and the joined true values. Rename the column before backtesting, "
+            "e.g. df.rename(columns={'actual': 'load'})."
+        )
+    return target if isinstance(target, str) else names
+
+
+def _valid_known_covariates(columns: Sequence[str], targets: tuple[str, ...]) -> tuple[str, ...]:
+    names = (columns,) if isinstance(columns, str) else tuple(columns)
+    if not all(isinstance(name, str) and name for name in names):
+        raise ValueError(f"known_covariates must be column names, got {columns!r}.")
+    if len(set(names)) != len(names):
+        raise ValueError(f"known_covariates contains duplicated names: {list(names)}.")
+    if clash := sorted(set(names) & {*targets, ID_COL, TIMESTAMP_COL}):
+        raise ValueError(
+            f"known_covariates cannot include the id, timestamp or target columns: {clash}. "
+            "A target's future values are exactly what the forecaster must not see."
+        )
+    return names
+
+
+def _valid_max_context(max_context: object, season_length: int) -> int:
+    value = _positive_int("max_context", max_context)
+    if value <= season_length:
+        raise ValueError(
+            f"max_context={value} must be larger than season_length={season_length}: "
+            "MASE and SQL need at least one seasonal difference in every context."
+        )
+    return value
+
+
+# --------------------------------------------------------------------------------------------
+# Windows
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, eq=False)
+class Window:
+    """One forecast origin of a backtest.
+
+    - ``context``: every column of the series frame, only rows with ``timestamp <= cutoff``.
+    - ``future_covariates``: ``item_id``, ``timestamp`` and the known covariates for the
+      ``prediction_length`` steps after ``cutoff``; ``None`` without known covariates.
+    - ``actuals``: ``item_id``, ``timestamp`` and the targets for the same steps. The
+      forecaster never receives them.
+
+    Every frame is new data built for this window (rows selected by a boolean mask, with a
+    fresh index and no ``attrs``), so writing to it never changes ``df`` or another window.
+    ``eq=False`` because DataFrames have no boolean equality: windows compare by identity.
+    """
+
+    index: int
+    cutoff: pd.Timestamp
+    context: pd.DataFrame
+    future_covariates: pd.DataFrame | None
+    actuals: pd.DataFrame
+
+    def __repr__(self) -> str:
+        future = "None" if self.future_covariates is None else f"{len(self.future_covariates)} rows"
+        return (
+            f"Window(index={self.index}, cutoff={self.cutoff}, context={len(self.context)} rows, "
+            f"future_covariates={future}, actuals={len(self.actuals)} rows)"
+        )
+
+
+def rolling_origin_windows(df: pd.DataFrame, config: BacktestConfig) -> list[Window]:
+    """Split a series frame into ``config.n_windows`` forecast origins, oldest first.
+
+    The last window's horizon ends at the series' last timestamp and consecutive cutoffs are
+    ``config.stride`` steps apart. All series must sit on a regular ``config.freq`` grid and end
+    at the same timestamp, so they share the cutoffs (run ``validate_and_prepare`` first).
+
+    Raises
+    ------
+    TypeError
+        If ``df`` is not a DataFrame, its timestamps are not datetime64 or its targets are not
+        numeric.
+    ValueError
+        If the frame is empty or malformed, the series are not aligned, or a series has fewer
+        than ``season_length + 1`` context rows in the first window.
+    """
+    return list(iter_windows(df, config))
+
+
+def iter_windows(df: pd.DataFrame, config: BacktestConfig) -> Iterator[Window]:
+    """Lazy :func:`rolling_origin_windows`: validates now, builds one window at a time."""
+    series = _prepare_series(df, config)
+    origins = _origins(series[TIMESTAMP_COL].max(), config)
+    _check_context_length(series, origins[0][0], config)
+    return (
+        _build_window(series, index, cutoff, horizon_end, config)
+        for index, (cutoff, horizon_end) in enumerate(origins)
+    )
+
+
+def _prepare_series(df: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
+    """Validate the series frame and return a sorted copy (the input is never modified)."""
+    _check_is_frame(df, "df")
+    _check_columns(df, [ID_COL, TIMESTAMP_COL, *config.targets, *config.known_covariates], "df")
+    if df.empty:
+        raise ValueError("df has no rows.")
+    _check_timestamps(df[TIMESTAMP_COL], "df")
+    if df[ID_COL].isna().any():
+        raise ValueError(f"df has missing values in {ID_COL!r}.")
+    _check_numeric(df, config.targets, "df")
+    series = df.sort_values([ID_COL, TIMESTAMP_COL], kind="stable", ignore_index=True)
+    _check_unique_keys(series, [ID_COL, TIMESTAMP_COL], "df")
+    _check_regular_grid(series, config.freq)
+    _check_common_end(series)
+    return series
+
+
+def _check_regular_grid(series: pd.DataFrame, freq: str) -> None:
+    off_grid = []
+    for item_id, timestamps in series.groupby(ID_COL, sort=False, observed=True)[TIMESTAMP_COL]:
+        expected = pd.date_range(timestamps.iloc[0], periods=len(timestamps), freq=freq)
+        if not np.array_equal(timestamps.to_numpy(), expected.to_numpy()):
+            off_grid.append(item_id)
+    if off_grid:
+        raise ValueError(
+            f"Series {off_grid[:5]} are not on a regular {freq!r} grid (missing rows or "
+            "off-grid timestamps). Reindex them first, e.g. with "
+            f"c2p.data.validate_and_prepare(df, freq={freq!r})."
+        )
+
+
+def _check_common_end(series: pd.DataFrame) -> None:
+    ends = series.groupby(ID_COL, sort=True, observed=True)[TIMESTAMP_COL].max()
+    if (ends != ends.iloc[0]).any():
+        raise ValueError(
+            "All series must end at the same timestamp so that they share cutoffs; got "
+            f"{_preview(ends)}. Trim them to a common end or backtest them separately."
+        )
+
+
+def _origins(
+    last_timestamp: pd.Timestamp, config: BacktestConfig
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """``(cutoff, horizon_end)`` per window, oldest first; the last horizon ends at the end."""
+    last_cutoff = (config.n_windows - 1) * config.stride
+    grid = pd.date_range(
+        end=last_timestamp, periods=last_cutoff + config.prediction_length + 1, freq=config.freq
+    )
+    return [
+        (grid[start], grid[start + config.prediction_length])
+        for start in range(0, last_cutoff + 1, config.stride)
+    ]
+
+
+def _check_context_length(
+    series: pd.DataFrame, first_cutoff: pd.Timestamp, config: BacktestConfig
+) -> None:
+    needed = config.season_length + 1
+    in_context = series.loc[series[TIMESTAMP_COL] <= first_cutoff]
+    counts = (
+        in_context.groupby(ID_COL, observed=True)
+        .size()
+        .reindex(series[ID_COL].unique(), fill_value=0)
+    )
+    short = counts[counts < needed]
+    if not short.empty:
+        raise ValueError(
+            f"{len(short)} series are too short for {config.n_windows} windows: context rows "
+            f"before the first cutoff {first_cutoff}: {_preview(short)}; need at least "
+            f"season_length + 1 = {needed}. Each series needs >= {config.min_series_length} "
+            "rows; reduce n_windows, step or prediction_length, or drop these series."
+        )
+
+
+def _build_window(
+    series: pd.DataFrame,
+    index: int,
+    cutoff: pd.Timestamp,
+    horizon_end: pd.Timestamp,
+    config: BacktestConfig,
+) -> Window:
+    timestamps = series[TIMESTAMP_COL]
+    context = series.loc[timestamps <= cutoff]
+    if config.max_context is not None:
+        context = context.groupby(ID_COL, sort=False, observed=True).tail(config.max_context)
+    horizon = series.loc[(timestamps > cutoff) & (timestamps <= horizon_end)]
+    future = None
+    if config.known_covariates:  # an explicit allow-list: targets and past covariates never pass
+        future = _detached(horizon[[ID_COL, TIMESTAMP_COL, *config.known_covariates]])
+    return Window(
+        index=index,
+        cutoff=cutoff,
+        context=_detached(context),
+        future_covariates=future,
+        actuals=_detached(horizon[[ID_COL, TIMESTAMP_COL, *config.targets]]),
+    )
+
+
+def _detached(frame: pd.DataFrame) -> pd.DataFrame:
+    """Fresh index and no ``attrs`` (metadata of the full frame).
+
+    No deep copy is needed: ``frame`` comes from a boolean row selection, which returns new
+    data, and pandas copy-on-write keeps later writes local to each frame.
+    """
+    detached = frame.reset_index(drop=True)
+    detached.attrs = {}
+    return detached
+
+
+# --------------------------------------------------------------------------------------------
+# Backtest
+# --------------------------------------------------------------------------------------------
+
+
+def backtest(
+    forecaster: Forecaster,
+    df: pd.DataFrame,
+    config: BacktestConfig,
+    *,
+    progress: bool = False,
+) -> pd.DataFrame:
+    """Run ``forecaster`` on every window and return its forecasts with the actuals joined.
+
+    The result is the forecast frame (``item_id``, ``timestamp``, ``target_name``,
+    ``predictions`` and the quantile columns of ``config.quantile_levels``, as float64) plus
+    ``window``, ``cutoff``, ``model`` (``forecaster.name``), ``actual`` (joined *after* the
+    forecaster has answered) and ``seconds`` (wall-clock time of that window's ``predict``
+    call). Other columns returned by the forecaster are dropped.
+
+    Each window's frames are built from ``df`` for that call only, so a forecaster that
+    modifies its inputs cannot change ``df`` or later windows. Windows run oldest first: even a
+    stateful forecaster has only seen earlier contexts when it forecasts a window.
+
+    Raises
+    ------
+    TypeError
+        If ``forecaster`` does not implement ``Forecaster``, ``df`` has wrong types (see
+        :func:`rolling_origin_windows`), or an output is not a DataFrame or has non-numeric
+        forecasts.
+    ValueError
+        If ``df`` is malformed (see :func:`rolling_origin_windows`), or an output misses or
+        adds rows (ids, targets, timestamps), lacks a quantile column, or contains NaN or
+        infinite forecasts. Output errors name the model and the window.
+    RuntimeError
+        If the leakage guard finds context after a cutoff or unexpected future columns right
+        before ``predict`` (a bug in this module, never expected).
+    """
+    _check_forecaster(forecaster)
+    frames = []
+    for window in iter_windows(df, config):
+        forecast, seconds = _timed_predict(forecaster, window, config)
+        frames.append(_with_actuals(forecast, window, config, forecaster.name, seconds))
+        logger.debug("%s: window %d done in %.3f s", forecaster.name, window.index, seconds)
+        if progress:
+            print(
+                f"[{forecaster.name}] window {window.index + 1}/{config.n_windows} "
+                f"(cutoff {window.cutoff}): {seconds:.2f} s",
+                flush=True,
+            )
+    return pd.concat(frames, ignore_index=True)
+
+
+def _check_forecaster(forecaster: object) -> None:
+    if not isinstance(forecaster, Forecaster):
+        raise TypeError(
+            f"{type(forecaster).__name__} does not implement the Forecaster protocol "
+            "(a `name` attribute and a `predict` method)."
+        )
+    if not isinstance(forecaster.name, str) or not forecaster.name:
+        raise ValueError("forecaster.name must be a non-empty string: it labels the results.")
+
+
+def _timed_predict(
+    forecaster: Forecaster, window: Window, config: BacktestConfig
+) -> tuple[object, float]:
+    _check_no_leakage(window, config)
+    start = time.perf_counter()
+    forecast = forecaster.predict(
+        window.context,
+        prediction_length=config.prediction_length,
+        quantile_levels=list(config.quantile_levels),
+        freq=config.freq,
+        target=config.target if isinstance(config.target, str) else list(config.target),
+        future_covariates=window.future_covariates,
+    )
+    return forecast, time.perf_counter() - start
+
+
+def _check_no_leakage(window: Window, config: BacktestConfig) -> None:
+    """Re-check the window invariants right before the forecaster sees the data."""
+    if (window.context[TIMESTAMP_COL] > window.cutoff).any():
+        raise RuntimeError(f"Leakage guard: window {window.index} has context after its cutoff.")
+    future = window.future_covariates
+    if future is None:
+        return
+    allowed = [ID_COL, TIMESTAMP_COL, *config.known_covariates]
+    if list(future.columns) != allowed:
+        raise RuntimeError(
+            f"Leakage guard: future covariates of window {window.index} have columns "
+            f"{list(future.columns)}, expected exactly {allowed}."
+        )
+    if (future[TIMESTAMP_COL] <= window.cutoff).any():
+        raise RuntimeError(f"Leakage guard: window {window.index} has future rows <= cutoff.")
+
+
+def _with_actuals(
+    forecast: object, window: Window, config: BacktestConfig, model: str, seconds: float
+) -> pd.DataFrame:
+    where = f"The forecast of {model!r} for window {window.index} (cutoff {window.cutoff})"
+    if not isinstance(forecast, pd.DataFrame):
+        raise TypeError(f"{where} is a {type(forecast).__name__}, expected a pandas DataFrame.")
+    columns = _forecast_columns(config)
+    _check_columns(forecast, columns, where)
+    joined = _join_actuals(forecast[columns], window.actuals, config.targets, where)
+    _check_finite(joined, [PREDICTION_COL, *config.quantile_columns], where)
+    joined = joined.astype(dict.fromkeys([PREDICTION_COL, *config.quantile_columns], "float64"))
+    labels = {
+        WINDOW_COL: window.index,
+        CUTOFF_COL: window.cutoff,
+        MODEL_COL: model,
+        SECONDS_COL: seconds,
+    }
+    return joined.assign(**labels)[
+        [*columns, WINDOW_COL, CUTOFF_COL, MODEL_COL, ACTUAL_COL, SECONDS_COL]
+    ]
+
+
+def _forecast_columns(config: BacktestConfig) -> list[str]:
+    return [ID_COL, TIMESTAMP_COL, TARGET_NAME_COL, PREDICTION_COL, *config.quantile_columns]
+
+
+def _join_actuals(
+    forecast: pd.DataFrame, actuals: pd.DataFrame, targets: Sequence[str], where: str
+) -> pd.DataFrame:
+    """Attach the true values, requiring exactly one forecast row per series, target and step.
+
+    Returns the rows sorted by ``item_id``, ``target_name``, ``timestamp``.
+    """
+    expected = actuals.melt(
+        id_vars=[ID_COL, TIMESTAMP_COL],
+        value_vars=list(targets),
+        var_name=TARGET_NAME_COL,
+        value_name=ACTUAL_COL,
+    )
+    _check_timestamps(forecast[TIMESTAMP_COL], where)
+    forecast = forecast.astype({key: expected[key].dtype for key in _SERIES_ORDER})
+    _check_unique_keys(forecast, _SERIES_ORDER, where)
+    merged = expected.merge(forecast, on=_SERIES_ORDER, how="outer", indicator=True)
+    missing = merged.loc[merged["_merge"] == "left_only", _SERIES_ORDER]
+    unexpected = merged.loc[merged["_merge"] == "right_only", _SERIES_ORDER]
+    if len(missing) or len(unexpected):
+        raise ValueError(
+            f"{where} must have one row per series, target and horizon step ({len(expected)} "
+            f"rows), continuing each series' grid after the cutoff. Missing {len(missing)} "
+            f"rows, e.g. {_examples(missing)}; unexpected {len(unexpected)} rows, e.g. "
+            f"{_examples(unexpected)}."
+        )
+    return merged.drop(columns="_merge").sort_values(_SERIES_ORDER, ignore_index=True)
+
+
+# --------------------------------------------------------------------------------------------
+# Metrics
+# --------------------------------------------------------------------------------------------
+
+
+def evaluate(
+    forecasts: pd.DataFrame,
+    df: pd.DataFrame,
+    config: BacktestConfig,
+    *,
+    by_target: bool = False,
+) -> pd.DataFrame:
+    """Score backtest forecasts with fev metrics: one row per (model, window).
+
+    Columns: ``model``, ``window``, ``cutoff`` (then ``target_name`` with ``by_target=True``),
+    ``n_series``, ``WQL``, ``MASE``, ``WAPE``, ``SQL``, ``coverage_80``, ``coverage_98`` (and
+    ``seconds`` when ``forecasts`` has it).
+
+    - Metrics use fev-bench settings: ``WQL(epsilon=1.0)``, ``WAPE(epsilon=1.0)``, ``MASE()``
+      and ``SQL()`` with ``seasonality=config.season_length``, and WQL and SQL average the
+      ``SCORED_QUANTILES`` deciles. MASE and SQL are scaled by the window's context only
+      (``y_past``, cut to ``max_context``), never by data after the cutoff.
+    - Each (item, target) pair is one fev series (``D=1``), like fev's
+      ``generate_univariate_targets_from``. With several targets, WQL and WAPE are therefore
+      dominated by the target with the largest values (MASE and SQL are scaled per pair).
+      ``by_target=True`` gives one row per (model, window, target) instead; averaging those
+      rows over targets reproduces fev's multivariate scoring (one dimension per target).
+    - NaN actuals are ignored (fev uses ``nanmean``). Coverage is the share of non-NaN
+      actuals inside each ``INTERVALS`` interval (NaN if no actual is observed).
+    - True values come from ``df``. If ``forecasts`` has an ``actual`` column it must equal
+      them exactly, and the cutoffs must match ``config``. This catches another ``df`` or other
+      windows (``n_windows``, ``step``, ``prediction_length``), but not another
+      ``season_length`` or ``max_context``, which change MASE and SQL: reuse the backtest's
+      config.
+
+    Raises
+    ------
+    TypeError
+        If ``forecasts`` or ``df`` is not a DataFrame or has wrong column types.
+    ValueError
+        If ``forecasts`` is empty, misses columns, rows or windows, or does not match ``df``
+        and ``config`` as described above.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    _check_columns(
+        forecasts, [*_forecast_columns(config), WINDOW_COL, CUTOFF_COL, MODEL_COL], "forecasts"
+    )
+    if forecasts.empty:
+        raise ValueError("forecasts is empty.")
+    _check_is_frame(df, "df")
+    _check_columns(df, [ID_COL, TIMESTAMP_COL, *config.targets], "df")
+    targets_only = replace(config, known_covariates=())  # scoring needs the targets only
+    windows = {
+        window.index: window
+        for window in iter_windows(df[[ID_COL, TIMESTAMP_COL, *config.targets]], targets_only)
+    }
+    rows = [
+        row
+        for (model, index), group in forecasts.groupby([MODEL_COL, WINDOW_COL], sort=True)
+        for row in _score_window(group, windows, model, index, config, by_target=by_target)
+    ]
+    return pd.DataFrame(rows)
+
+
+def _score_window(
+    forecast: pd.DataFrame,
+    windows: Mapping[int, Window],
+    model: str,
+    index: int,
+    config: BacktestConfig,
+    *,
+    by_target: bool,
+) -> list[dict[str, object]]:
+    """Metric rows of one (model, window): one row, or one per target with ``by_target``."""
+    where = f"The forecast of {model!r} for window {index}"
+    if index not in windows:
+        raise ValueError(
+            f"{where} does not exist for this config (windows 0..{config.n_windows - 1}). "
+            "Evaluate with the same df and config as the backtest."
+        )
+    window = windows[index]
+    _check_cutoff(forecast, window, where)
+    joined = _join_actuals(
+        _with_reported_actual(forecast, config), window.actuals, config.targets, where
+    )
+    joined = _drop_checked_reported_actual(joined, where)
+    _check_finite(joined, [PREDICTION_COL, *config.quantile_columns], where)
+    labels: dict[str, object] = {MODEL_COL: model, WINDOW_COL: index, CUTOFF_COL: window.cutoff}
+    timing = {SECONDS_COL: float(forecast[SECONDS_COL].iloc[0])} if SECONDS_COL in forecast else {}
+    if not by_target:
+        return [labels | _scores(joined, window.context, config) | timing]
+    return [
+        labels
+        | {TARGET_NAME_COL: target}
+        | _scores(joined.loc[joined[TARGET_NAME_COL] == target], window.context, config)
+        | timing
+        for target in config.targets
+    ]
+
+
+def _scores(
+    joined: pd.DataFrame, context: pd.DataFrame, config: BacktestConfig
+) -> dict[str, object]:
+    """``n_series``, the fev metrics and coverage of a joined, sorted block of forecasts."""
+    arrays = _fev_arrays(joined, context, config)
+    return {
+        N_SERIES_COL: len(arrays["y_true"]),
+        **_fev_scores(arrays, config),
+        **{
+            coverage_column(level): _coverage(joined, *bounds)
+            for level, bounds in INTERVALS.items()
+        },
+    }
+
+
+def _check_cutoff(forecast: pd.DataFrame, window: Window, where: str) -> None:
+    cutoffs = {pd.Timestamp(cutoff) for cutoff in forecast[CUTOFF_COL].unique()}
+    if cutoffs != {window.cutoff}:
+        raise ValueError(
+            f"{where} has cutoff {sorted(cutoffs)}, but df and config give {window.cutoff}. "
+            "Evaluate with the same df and config as the backtest."
+        )
+
+
+def _with_reported_actual(forecast: pd.DataFrame, config: BacktestConfig) -> pd.DataFrame:
+    columns = _forecast_columns(config)
+    if ACTUAL_COL not in forecast:
+        return forecast[columns]
+    return forecast[[*columns, ACTUAL_COL]].rename(columns={ACTUAL_COL: _REPORTED_ACTUAL})
+
+
+def _drop_checked_reported_actual(joined: pd.DataFrame, where: str) -> pd.DataFrame:
+    """Drop the forecasts' own ``actual`` column after checking it against ``df``.
+
+    Both come from ``df`` unchanged, so they must be equal exactly: a tolerance would let a
+    small edit pass at large scales (e.g. 0.25 MW on a load of 28,000 MW).
+    """
+    if _REPORTED_ACTUAL not in joined:
+        return joined
+    reported = joined[_REPORTED_ACTUAL].to_numpy("float64", na_value=np.nan)
+    actual = joined[ACTUAL_COL].to_numpy("float64", na_value=np.nan)
+    if not np.array_equal(reported, actual, equal_nan=True):
+        raise ValueError(
+            f"{where}: its 'actual' column differs from the values in df. "
+            "Evaluate with the same df and config as the backtest."
+        )
+    return joined.drop(columns=_REPORTED_ACTUAL)
+
+
+def _fev_arrays(
+    joined: pd.DataFrame, context: pd.DataFrame, config: BacktestConfig
+) -> dict[str, np.ndarray]:
+    """fev inputs: ``y_true``/``y_pred`` [N, H, 1], ``q_pred`` [N, H, 1, Q], ragged ``y_past``.
+
+    ``joined`` is sorted by item, target and timestamp and complete, so a reshape gives one
+    row per (item, target) pair; ``y_past`` holds the same pairs' context values. ``q_pred``
+    holds the ``SCORED_QUANTILES`` columns only.
+    """
+    horizon = config.prediction_length
+    pairs = joined[[ID_COL, TARGET_NAME_COL]].iloc[::horizon]
+    n_series = len(pairs)
+    past = _past_values(context, pairs)
+    return {
+        "y_true": joined[ACTUAL_COL].to_numpy("float64").reshape(n_series, horizon, 1),
+        "y_pred": joined[PREDICTION_COL].to_numpy("float64").reshape(n_series, horizon, 1),
+        "q_pred": joined[_SCORED_COLUMNS]
+        .to_numpy("float64")
+        .reshape(n_series, horizon, 1, len(_SCORED_COLUMNS)),
+        "y_past": np.concatenate(past)[:, None],
+        "y_past_lengths": np.array([len(values) for values in past]),
+    }
+
+
+def _past_values(context: pd.DataFrame, pairs: pd.DataFrame) -> list[np.ndarray]:
+    by_item = dict(tuple(context.groupby(ID_COL, sort=False, observed=True)))
+    return [
+        by_item[item][target].to_numpy("float64") for item, target in pairs.itertuples(index=False)
+    ]
+
+
+def _fev_scores(arrays: Mapping[str, np.ndarray], config: BacktestConfig) -> dict[str, float]:
+    with warnings.catch_warnings():
+        # Same as fev: an all-NaN slice yields a NaN score instead of a RuntimeWarning.
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        return {
+            name: metric.compute(
+                **arrays,
+                seasonality=config.season_length,
+                quantile_levels=list(SCORED_QUANTILES),
+            )
+            for name, metric in METRICS.items()
+        }
+
+
+def _coverage(joined: pd.DataFrame, lower: float, upper: float) -> float:
+    """Share of non-NaN actuals inside ``[q_lower, q_upper]``; NaN if none is observed.
+
+    ``BacktestConfig`` requires the ``INTERVALS`` levels, so both columns always exist.
+    """
+    observed = joined.loc[joined[ACTUAL_COL].notna()]
+    if observed.empty:
+        return float("nan")
+    inside = observed[ACTUAL_COL].between(
+        observed[quantile_col(lower)], observed[quantile_col(upper)]
+    )
+    return float(inside.mean())
+
+
+def summarize(metrics: pd.DataFrame) -> pd.DataFrame:
+    """Mean and standard deviation over windows of each model's metrics, best WQL first.
+
+    With per-target metrics (``evaluate(..., by_target=True)``) there is one row per model and
+    target, sorted by target and then WQL. NaN scores are not skipped: fev also averages
+    windows with a plain mean, and a NaN means a metric was undefined in some window, which a
+    skipping mean would hide.
+    """
+    _check_is_frame(metrics, "metrics")
+    _check_columns(metrics, [MODEL_COL, WINDOW_COL], "metrics")
+    candidates = (*METRICS, *COVERAGE_COLUMNS, SECONDS_COL)
+    columns = [column for column in candidates if column in metrics]
+    if not columns:
+        raise ValueError(f"metrics has none of the metric columns {list(candidates)}.")
+    per_target = TARGET_NAME_COL in metrics
+    keys = [MODEL_COL, TARGET_NAME_COL] if per_target else [MODEL_COL]
+    grouped = metrics.groupby(keys, sort=True)[columns]
+    summary = pd.concat(
+        [
+            grouped.size().rename("n_windows"),
+            grouped.mean(skipna=False),
+            grouped.std(skipna=False).add_suffix("_std"),
+        ],
+        axis=1,
+    )
+    ordered = ["n_windows", *[name for column in columns for name in (column, f"{column}_std")]]
+    summary = summary[ordered].reset_index()
+    if "WQL" in summary:
+        order = [TARGET_NAME_COL, "WQL"] if per_target else ["WQL"]
+        summary = summary.sort_values(order, kind="stable", ignore_index=True)
+    return summary
+
+
+# --------------------------------------------------------------------------------------------
+# Skill scores
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SkillScore:
+    """Skill of ``model`` over ``baseline`` on ``metric``: ``1 - gmean(model / baseline)``.
+
+    ``ci_low``/``ci_high`` bound the 95% bootstrap interval over the ``n_units`` windows;
+    ``win_rate`` is the share of windows where the model beats the baseline (ties count 0.5).
+    """
+
+    model: str
+    baseline: str
+    metric: str
+    skill: float
+    ci_low: float
+    ci_high: float
+    win_rate: float
+    n_units: int
+
+
+def skill_score(
+    metrics: pd.DataFrame,
+    *,
+    model: str,
+    baseline: str = "seasonal_naive",
+    metric: str = "WQL",
+    n_resamples: int = 1000,
+    seed: int = SEED,
+    clip: tuple[float, float] = (0.01, 100.0),
+) -> SkillScore:
+    """Skill score of ``model`` relative to ``baseline``, with a bootstrap confidence interval.
+
+    Follows the fev-bench leaderboard with windows as units: the relative error of each window
+    (model / baseline) is clipped to ``clip`` so a single window cannot dominate, the skill is
+    ``1 - gmean(relative errors)`` (0 = as good as the baseline, 0.5 = errors halved), and
+    the 95% interval comes from ``fev.analysis.bootstrap`` over windows. Deterministic for a
+    given ``seed``. Per-target metrics must be filtered to one target first.
+    """
+    model_errors, baseline_errors = _paired_errors(metrics, model, baseline, metric)
+    relative = _relative_errors(model_errors, baseline_errors, clip)
+    skill, ci_low, ci_high = bootstrap(
+        relative[:, None],
+        statistic=_skill,
+        n_resamples=_positive_int("n_resamples", n_resamples),
+        seed=seed,
+    )
+    return SkillScore(
+        model=model,
+        baseline=baseline,
+        metric=metric,
+        skill=float(skill[0]),
+        ci_low=float(ci_low[0]),
+        ci_high=float(ci_high[0]),
+        win_rate=_win_rate(model_errors, baseline_errors),
+        n_units=len(relative),
+    )
+
+
+def skill_table(
+    metrics: pd.DataFrame,
+    baseline: str = "seasonal_naive",
+    metric: str = "WQL",
+    *,
+    n_resamples: int = 1000,
+    seed: int = SEED,
+    clip: tuple[float, float] = (0.01, 100.0),
+) -> pd.DataFrame:
+    """:func:`skill_score` of every model in ``metrics`` (baseline included), best first."""
+    _check_is_frame(metrics, "metrics")
+    _check_columns(metrics, [MODEL_COL], "metrics")
+    scores = [
+        asdict(
+            skill_score(
+                metrics,
+                model=model,
+                baseline=baseline,
+                metric=metric,
+                n_resamples=n_resamples,
+                seed=seed,
+                clip=clip,
+            )
+        )
+        for model in sorted(metrics[MODEL_COL].unique())
+    ]
+    return pd.DataFrame(scores).sort_values(
+        "skill", ascending=False, kind="stable", ignore_index=True
+    )
+
+
+def _paired_errors(
+    metrics: pd.DataFrame, model: str, baseline: str, metric: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Errors of both models on the same windows, ordered by window."""
+    _check_is_frame(metrics, "metrics")
+    _check_columns(metrics, [MODEL_COL, WINDOW_COL, metric], "metrics")
+    targets = sorted(metrics[TARGET_NAME_COL].unique()) if TARGET_NAME_COL in metrics else []
+    if len(targets) > 1:
+        raise ValueError(
+            f"metrics has rows for several targets {targets}; score one target at a time, "
+            f"e.g. metrics[metrics[{TARGET_NAME_COL!r}] == {targets[0]!r}]."
+        )
+    available = sorted(metrics[MODEL_COL].unique())
+    if missing := [name for name in (model, baseline) if name not in available]:
+        raise ValueError(f"metrics has no rows for {missing}; available models: {available}.")
+    model_errors = _errors_by_window(metrics, model, metric)
+    baseline_errors = _errors_by_window(metrics, baseline, metric)
+    if not model_errors.index.equals(baseline_errors.index):
+        raise ValueError(
+            f"{model!r} and {baseline!r} must be scored on the same windows; got "
+            f"{model_errors.index.tolist()} and {baseline_errors.index.tolist()}."
+        )
+    if undefined := model_errors.index[model_errors.isna() | baseline_errors.isna()].tolist():
+        raise ValueError(f"{metric} is NaN for {model!r} or {baseline!r} in windows {undefined}.")
+    return model_errors.to_numpy("float64"), baseline_errors.to_numpy("float64")
+
+
+def _errors_by_window(metrics: pd.DataFrame, model: str, metric: str) -> pd.Series:
+    rows = metrics.loc[metrics[MODEL_COL] == model]
+    if rows[WINDOW_COL].duplicated().any():
+        raise ValueError(f"metrics has several rows for the same window of {model!r}.")
+    return rows.set_index(WINDOW_COL)[metric].sort_index().astype("float64")
+
+
+def _relative_errors(
+    model_errors: np.ndarray, baseline_errors: np.ndarray, clip: tuple[float, float]
+) -> np.ndarray:
+    low, high = clip
+    if not 0.0 < low < high:
+        raise ValueError(f"clip must satisfy 0 < low < high, got {clip}.")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = model_errors / baseline_errors
+    if np.isnan(ratio).any():
+        raise ValueError("Relative error is 0/0 in some windows: both models have zero error.")
+    return np.clip(ratio, low, high)
+
+
+def _skill(relative_errors: np.ndarray) -> np.ndarray:
+    """Bootstrap statistic: ``1 - gmean`` over windows (axis 0), as in fev's leaderboard."""
+    return 1.0 - scipy.stats.gmean(relative_errors, axis=0)
+
+
+def _win_rate(model_errors: np.ndarray, baseline_errors: np.ndarray) -> float:
+    wins = np.mean(model_errors < baseline_errors)
+    ties = np.mean(model_errors == baseline_errors)
+    return float(wins + 0.5 * ties)
+
+
+# --------------------------------------------------------------------------------------------
+# Small checks shared by the public functions
+# --------------------------------------------------------------------------------------------
+
+
+def _check_is_frame(frame: object, where: str) -> None:
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError(f"{where} must be a pandas DataFrame, got {type(frame).__name__}.")
+
+
+def _check_columns(frame: pd.DataFrame, columns: Sequence[str], where: str) -> None:
+    if missing := [column for column in columns if column not in frame.columns]:
+        raise ValueError(f"{where} is missing columns {missing}; it has {list(frame.columns)}.")
+
+
+def _check_timestamps(timestamps: pd.Series, where: str) -> None:
+    if isinstance(timestamps.dtype, pd.DatetimeTZDtype):
+        raise ValueError(
+            f"{where}: timestamps must be timezone-naive UTC, got {timestamps.dtype}. "
+            "Convert with .dt.tz_convert('UTC').dt.tz_localize(None)."
+        )
+    if not pd.api.types.is_datetime64_dtype(timestamps.dtype):
+        raise TypeError(
+            f"{where}: {TIMESTAMP_COL!r} must be datetime64, got {timestamps.dtype}. Parse it "
+            "with pd.to_datetime (or read_csv(..., parse_dates=[...]))."
+        )
+    if timestamps.isna().any():
+        raise ValueError(f"{where}: {TIMESTAMP_COL!r} has missing values (NaT).")
+
+
+def _check_numeric(frame: pd.DataFrame, columns: Sequence[str], where: str) -> None:
+    if bad := [
+        column
+        for column in columns
+        if not pd.api.types.is_numeric_dtype(frame[column])
+        or pd.api.types.is_bool_dtype(frame[column])
+    ]:
+        raise TypeError(f"{where}: columns {bad} must be numeric.")
+
+
+def _check_unique_keys(frame: pd.DataFrame, keys: list[str], where: str) -> None:
+    duplicated = frame.duplicated(keys, keep=False)
+    if duplicated.any():
+        raise ValueError(
+            f"{where} has {int(duplicated.sum())} rows with duplicated {keys}, e.g. "
+            f"{_examples(frame.loc[duplicated, keys])}."
+        )
+
+
+def _check_finite(frame: pd.DataFrame, columns: list[str], where: str) -> None:
+    _check_numeric(frame, columns, where)
+    finite = np.isfinite(frame[columns].to_numpy("float64", na_value=np.nan))
+    if not finite.all():
+        counts = {
+            column: int(n) for column, n in zip(columns, (~finite).sum(axis=0), strict=True) if n
+        }
+        raise ValueError(f"{where} has NaN or infinite values (count per column): {counts}.")
+
+
+def _examples(frame: pd.DataFrame, n: int = 3) -> list[tuple[str, ...]]:
+    return [tuple(str(value) for value in row) for row in frame.head(n).itertuples(index=False)]
+
+
+def _preview(values: pd.Series, n: int = 5) -> dict[str, str]:
+    return {str(key): str(value) for key, value in values.head(n).items()}

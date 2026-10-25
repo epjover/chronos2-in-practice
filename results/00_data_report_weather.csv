@@ -1,0 +1,23 @@
+metric,value
+freq,h
+n_series,5
+n_rows_in,178396
+n_rows_out,175320
+n_duplicates,3076
+n_sentinels,0
+n_missing_timestamps,0
+n_trimmed,0
+n_missing_values[temp_c],0
+n_missing_values[temp_min_c],0
+n_missing_values[temp_max_c],0
+n_missing_values[pressure],0
+n_missing_values[humidity],0
+n_missing_values[wind_speed],0
+n_missing_values[wind_deg],0
+n_missing_values[rain_1h],0
+n_missing_values[rain_3h],0
+n_missing_values[snow_3h],0
+n_missing_values[clouds_all],0
+n_missing_values[weather_main],0
+short_series,
+notes,Timestamps are timezone-naive and no source_tz was given: assumed to be UTC.

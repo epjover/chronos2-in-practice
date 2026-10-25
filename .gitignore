@@ -1,0 +1,56 @@
+# Private planning documents (kept local on purpose)
+PLAN.md
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments (uv creates .venv/)
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data, models and outputs that are regenerated, never committed
+data/raw/
+models/
+results/fast/
+chronos-2-finetuned/
+mlruns/
+lightning_logs/
+
+# Model weights, wherever a notebook or script saves them
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# Secrets and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Editors
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini

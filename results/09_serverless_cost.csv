@@ -1,0 +1,5 @@
+memory_gb,device,model,context_length,seconds_per_request,usd_per_gb_second,usd_per_million_requests,measured_on
+6,cpu,amazon/chronos-2,512,0.041634219989646226,2e-05,4.996106398757548,12th Gen Intel(R) Core(TM) i9-12900K (8 threads)
+6,cpu,amazon/chronos-2,2048,0.09277063998160884,2e-05,11.132476797793062,12th Gen Intel(R) Core(TM) i9-12900K (8 threads)
+6,cpu,autogluon/chronos-2-small,512,0.015073357964865863,2e-05,1.8088029557839038,12th Gen Intel(R) Core(TM) i9-12900K (8 threads)
+6,cpu,autogluon/chronos-2-small,2048,0.025601397966966033,2e-05,3.0721677560359244,12th Gen Intel(R) Core(TM) i9-12900K (8 threads)

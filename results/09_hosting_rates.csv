@@ -1,0 +1,11 @@
+instance,vcpu,gpu,memory,usd_per_hour,usd_per_month,region,checked_on
+ml.m5.large,2.0,0.0,8 GiB,0.115,83.95,us-east-1,2026-10-25
+ml.c7i.xlarge,4.0,,8 GiB,0.214,156.22,us-east-1,2026-10-25
+ml.m5.xlarge,4.0,0.0,16 GiB,0.23,167.9,us-east-1,2026-10-25
+ml.c7i.2xlarge,8.0,,16 GiB,0.428,312.44,us-east-1,2026-10-25
+ml.m5.2xlarge,8.0,0.0,32 GiB,0.461,336.53000000000003,us-east-1,2026-10-25
+ml.g4dn.xlarge,4.0,1.0,16 GiB,0.736,537.28,us-east-1,2026-10-25
+ml.c7i.4xlarge,16.0,,32 GiB,0.857,625.61,us-east-1,2026-10-25
+ml.g6.xlarge,4.0,1.0,16 GiB,1.1267,822.491,us-east-1,2026-10-25
+ml.g5.xlarge,4.0,1.0,16 GiB,1.408,1027.84,us-east-1,2026-10-25
+ml.g5.2xlarge,8.0,1.0,32 GiB,1.515,1105.9499999999998,us-east-1,2026-10-25

@@ -57,6 +57,24 @@ command, keep passing the extra you installed with (`uv run --extra cu130 jupyte
 `uv run --no-sync ...`. `get_device()` picks the CPU whenever PyTorch cannot see a GPU; set
 `C2P_DEVICE=cuda` to get an error instead.
 
+## Your own data
+
+The notebooks start from the Spanish electricity dataset. `examples/forecast_your_series.py` is
+the same pipeline pointed at a CSV of yours: the data checklist of part 1, a zero-shot forecast at
+the quantiles you ask for, a fan chart, and (optionally) the rolling-origin backtest of part 2
+against a seasonal naive baseline, with the skill score and its bootstrap interval:
+
+```bash
+uv run python examples/forecast_your_series.py data.csv \
+    --id-column store --timestamp-column date --target sales --freq D --horizon 14 --backtest 8
+```
+
+Omit `--id-column` for a single series. `--known col1 col2` passes known-future covariates
+(part 3; append the horizon rows with the target left empty), `--source-tz Europe/Madrid`
+converts naive local timestamps, `--sentinels 0 -999` turns placeholder values into gaps, and
+`--model path/to/checkpoint` runs a fine-tuned model from part 4. Outputs land next to the CSV
+(or in `--out`): `<name>_forecast.csv`, `<name>_fan.png` and `<name>_backtest.csv`.
+
 ## Without uv
 
 The project needs Python 3.11, 3.12 or 3.13 (the articles use 3.11); pip refuses newer versions.
@@ -120,6 +138,8 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── plots/              # figures specific to one article (architecture, evaluation)
 │   └── results.py          # saving and loading experiment CSV files
 ├── notebooks/              # 00_data_checks ... 08_finetune_full
+├── examples/
+│   └── forecast_your_series.py  # checklist + zero-shot forecast + backtest on your CSV
 ├── bench/
 │   ├── bench_cpu_gpu.py    # latency and throughput vs batch, context, checkpoint, device
 │   └── small_vs_base_accuracy.py  # chronos-2-small vs chronos-2 on the day-ahead protocol
@@ -149,7 +169,7 @@ figure uses numbers typed into a notebook. To check a number in an article, open
 from; to regenerate it, rerun the notebook.
 
 Cloud prices follow the same rule. `scripts/fetch_cloud_prices.py` reads the AWS Price List API
-— public, no credentials, no resources created — and writes `data/reference/cloud_prices.csv`
+(public, no credentials, no resources created) and writes `data/reference/cloud_prices.csv`
 with the SKU, the effective date and the offer-file version beside every rate, so a stale table
 is visible instead of silently wrong. `scripts/cost_table.py` joins those rates with the
 throughput measured by `bench/bench_cpu_gpu.py`; it never claims local throughput transfers to a
@@ -202,7 +222,7 @@ Three paths, in increasing order of how much AWS does for you, each with its own
 
 The two cloud scripts create nothing unless you pass `--yes`: `--plan` is the default and prints
 exactly what would be created and what would keep billing. `boto3`, `sagemaker` and
-`autogluon.cloud` are deliberately not dependencies of this project — add them with
+`autogluon.cloud` are deliberately not dependencies of this project; add them with
 `uv add --group cloud ...` when you want them.
 
 ## Data

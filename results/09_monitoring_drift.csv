@@ -1,0 +1,2 @@
+column,reference_mean,current_mean,reference_std,current_std,z_shift,share_outside_reference_range
+load_actual,28667.983763267028,28814.650815217392,4587.9669456220245,4663.464802447619,0.03196776561137133,0.2151268115942029

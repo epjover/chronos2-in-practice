@@ -3,6 +3,9 @@ PLAN.md
 CLAUDE.md
 SERIES_REVIEW.md
 
+# Article drafts: kept out of the repository until all five are published on Medium
+articles/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,0 +1,2 @@
+run,rank,trainable_parameters,total_parameters,train_seconds,peak_vram_mb,artifact_mb,steps,best_step,best_eval_loss
+full,,119477664,119477664,279.42226772301365,5496.68408203125,455.79102897644043,1000,1000,2.9775192737579346

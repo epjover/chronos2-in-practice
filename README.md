@@ -20,7 +20,7 @@ deployment and monitoring. Every experiment in the articles can be rerun from th
 | 2 | Evaluation, Context Length, Multivariate and Cold Start (coming soon) | [`02_evaluation`](notebooks/02_evaluation.ipynb), [`03_context_length`](notebooks/03_context_length.ipynb), [`04_multivariate_coldstart`](notebooks/04_multivariate_coldstart.ipynb) |
 | 3 | Covariates and What Drives the Forecast (coming soon) | [`05_covariates`](notebooks/05_covariates.ipynb), [`06_explainability`](notebooks/06_explainability.ipynb) |
 | 4 | LoRA vs Full Fine-Tuning (coming soon) | [`07_finetune_lora`](notebooks/07_finetune_lora.ipynb), [`08_finetune_full`](notebooks/08_finetune_full.ipynb) (GPU) |
-| 5 | Deployment, Performance and Monitoring (coming soon) | [`bench/`](bench/), [`deploy/`](deploy/), [`monitoring/`](monitoring/) |
+| 5 | Deployment, Performance and Monitoring (coming soon) | [`bench/`](bench/), [`deploy/`](deploy/), [`monitoring/`](monitoring/), [`scripts/cost_table.py`](scripts/cost_table.py) |
 
 Everything runs on a CPU except the fine-tuning notebooks `07` and `08`, which need a GPU (local
 or Colab).
@@ -112,14 +112,29 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── eval.py             # rolling-origin backtests, metrics, skill scores
 │   ├── models.py           # Chronos-2 forecaster
 │   ├── baselines.py        # Seasonal Naive, AutoETS, Chronos-Bolt
+│   ├── finetune.py         # splits, LoRA and full fine-tuning
+│   ├── fev_tasks.py        # published fev-bench tasks, translated to our protocol
+│   ├── monitoring.py       # prediction log, delayed actuals, rolling metrics, alerts
+│   ├── conformal.py        # conformalized quantile regression: honest intervals after the fact
 │   ├── plotting.py         # article figures
+│   ├── plots/              # figures specific to one article (architecture, evaluation)
 │   └── results.py          # saving and loading experiment CSV files
 ├── notebooks/              # 00_data_checks ... 08_finetune_full
-├── bench/                  # CPU/GPU latency and throughput
-├── deploy/                 # FastAPI + Docker container and cloud recipes
-├── monitoring/             # prediction log, rolling metrics, alerts
+├── bench/
+│   ├── bench_cpu_gpu.py    # latency and throughput vs batch, context, checkpoint, device
+│   └── small_vs_base_accuracy.py  # chronos-2-small vs chronos-2 on the day-ahead protocol
+├── deploy/
+│   ├── fastapi/            # the container you run: app.py, Dockerfile, smoke_test.py
+│   ├── sagemaker/          # a managed endpoint you own: inference.py + lifecycle script
+│   └── autogluon_cloud/    # batch, real-time or serverless, with no handler to write
+├── monitoring/
+│   ├── build_panel.py      # replays 2018 as production and builds the alert panel
+│   └── calibrate_intervals.py  # calibrates the bands on 2017-H2, re-scores 2018
 ├── results/                # one CSV per experiment + figures/
-├── scripts/set_repo_url.py # sets the GitHub owner/name used in links
+├── scripts/
+│   ├── set_repo_url.py     # sets the GitHub owner/name used in links
+│   ├── fetch_cloud_prices.py  # AWS Price List API -> data/reference/cloud_prices.csv
+│   └── cost_table.py       # joins measured throughput with published rates
 ├── tests/                  # pytest suite
 ├── pyproject.toml
 └── uv.lock
@@ -132,6 +147,18 @@ Each experiment writes `results/<notebook>_<experiment>.csv`, and every figure i
 from `data/reference/` (copied from the paper, with the tables named in the `source` column). No
 figure uses numbers typed into a notebook. To check a number in an article, open the CSV it comes
 from; to regenerate it, rerun the notebook.
+
+Cloud prices follow the same rule. `scripts/fetch_cloud_prices.py` reads the AWS Price List API
+— public, no credentials, no resources created — and writes `data/reference/cloud_prices.csv`
+with the SKU, the effective date and the offer-file version beside every rate, so a stale table
+is visible instead of silently wrong. `scripts/cost_table.py` joins those rates with the
+throughput measured by `bench/bench_cpu_gpu.py`; it never claims local throughput transfers to a
+cloud instance, and reports the rate-only break-even ratio separately for that reason.
+
+The one figure that shows no measurement is the architecture diagram of article 1
+(`c2p.plots.architecture`): it describes the model. Even there the sizes it prints are read from
+the loaded checkpoint with `chronos2_sizes(pipeline)`, so the drawing cannot disagree with the
+weights, and a slow test asserts that `amazon/chronos-2` still matches the published defaults.
 
 ## Fast mode
 
@@ -162,6 +189,21 @@ C2P_FAST_MODE=1 C2P_DEVICE=cpu uv run pytest --nbmake notebooks/ \
 CI (`.github/workflows/ci.yml`) runs all of the above except the slow tests on every push and
 pull request to `main`. `--nbmake-kernel=python3` runs every notebook in the project environment,
 whatever kernel it was saved with; `--nbmake-timeout` is per cell, in seconds.
+
+## Deployment and cost
+
+Three paths, in increasing order of how much AWS does for you, each with its own README:
+
+| Path | What you manage | Teardown |
+| --- | --- | --- |
+| [`deploy/fastapi`](deploy/fastapi/) | A container you run anywhere | `docker rm -f` |
+| [`deploy/sagemaker`](deploy/sagemaker/) | A handler and an endpoint in your account | `deploy_endpoint.py --delete --yes` |
+| [`deploy/autogluon_cloud`](deploy/autogluon_cloud/) | Nothing; batch, real-time or serverless | `deploy_timeseries.py --delete --yes` |
+
+The two cloud scripts create nothing unless you pass `--yes`: `--plan` is the default and prints
+exactly what would be created and what would keep billing. `boto3`, `sagemaker` and
+`autogluon.cloud` are deliberately not dependencies of this project — add them with
+`uv add --group cloud ...` when you want them.
 
 ## Data
 

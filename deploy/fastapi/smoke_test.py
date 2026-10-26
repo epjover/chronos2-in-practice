@@ -15,6 +15,7 @@ Only ``httpx`` and the standard library are needed. The exit code is 1 when a ch
 from __future__ import annotations
 
 import argparse
+import csv
 import itertools
 import math
 import random
@@ -24,6 +25,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -135,6 +137,20 @@ class BenchResult:
     client_ms: list[float]
     server_ms: list[float]
 
+    def row(self, *, model_id: str, prediction_length: int) -> dict[str, float | int | str]:
+        """One CSV row: the latency percentiles an operator would quote for this batch size."""
+        client, server = _p50_p95(self.client_ms), _p50_p95(self.server_ms)
+        return {
+            "model_id": model_id,
+            "n_series": self.n_series,
+            "prediction_length": prediction_length,
+            "repeats": self.repeats,
+            "client_p50_ms": round(client[0], 2),
+            "client_p95_ms": round(client[1], 2),
+            "server_p50_ms": round(server[0], 2),
+            "server_p95_ms": round(server[1], 2),
+        }
+
     def __str__(self) -> str:
         client, server = _p50_p95(self.client_ms), _p50_p95(self.server_ms)
         return (
@@ -165,6 +181,15 @@ def _p50_p95(values: Sequence[float]) -> tuple[float, float]:
     return statistics.median(values), statistics.quantiles(values, n=20, method="inclusive")[-1]
 
 
+def write_csv(rows: Sequence[dict[str, object]], path: Path) -> None:
+    """Write the benchmark rows, so an article can cite a file instead of a terminal."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--url", default="http://localhost:8000", help="service base URL")
@@ -177,6 +202,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=20, help="timed requests per size")
     parser.add_argument("--prediction-length", type=int, default=24)
     parser.add_argument("--timeout", type=float, default=300.0, help="request timeout in seconds")
+    parser.add_argument(
+        "--csv", type=Path, help="write the --bench latencies here (one row per batch size)"
+    )
     return parser.parse_args(argv)
 
 
@@ -192,6 +220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             body, client_ms = post_forecast(client, payload)
             check_forecast(body, payload)
             print_forecast(body, client_ms)
+            rows = []
             for n_series in args.bench:
                 result = benchmark(
                     client,
@@ -199,7 +228,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     repeats=args.repeats,
                     prediction_length=args.prediction_length,
                 )
+                rows.append(
+                    result.row(model_id=body["model_id"], prediction_length=args.prediction_length)
+                )
                 print(f"bench {result}")
+            if args.csv and rows:
+                write_csv(rows, args.csv)
+                print(f"wrote {args.csv}")
         except (SmokeTestError, httpx.HTTPError) as error:
             print(f"SMOKE TEST FAILED: {error}", file=sys.stderr)
             return 1

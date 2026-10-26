@@ -42,3 +42,24 @@ def test_run_metadata_lists_versions() -> None:
     assert meta["chronos-forecasting"] == "2.3.2"
     assert meta["device"] == "cpu"
     assert meta["fast_mode"] == "True"
+
+
+# --- hardware -------------------------------------------------------------------------------
+
+
+def test_hardware_info_names_the_cpu_and_the_thread_count():
+    from c2p.results import cores_available, cpu_model, hardware_info
+
+    info = hardware_info()
+    assert set(info) == {"cpu", "cores_available", "torch_threads", "gpu"}
+    assert info["cpu"] == cpu_model() and info["cpu"] not in ("", "unknown")
+    assert int(info["cores_available"]) == cores_available() >= 1
+    assert int(info["torch_threads"]) >= 1
+
+
+def test_run_metadata_includes_the_hardware():
+    from c2p.results import run_metadata
+
+    meta = run_metadata(device="cpu", fast_mode=True)
+    for key in ("cpu", "cores_available", "torch_threads", "gpu"):
+        assert key in meta

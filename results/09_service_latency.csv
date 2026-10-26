@@ -1,0 +1,5 @@
+model_id,n_series,prediction_length,repeats,client_p50_ms,client_p95_ms,server_p50_ms,server_p95_ms
+amazon/chronos-2,1,24,10,48.87,73.78,46.57,71.5
+amazon/chronos-2,8,24,10,116.86,178.81,113.14,175.1
+amazon/chronos-2,32,24,10,351.96,432.86,343.92,424.63
+amazon/chronos-2,128,24,10,1234.77,1332.8,1207.49,1305.03

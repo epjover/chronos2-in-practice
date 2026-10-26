@@ -82,8 +82,16 @@ class Settings:
     device: Literal["cpu", "cuda"] = "cpu"
     max_context: int = MODEL_CONTEXT_LENGTH
     log_level: str = "INFO"
+    torch_threads: int = 0  # 0 = every core available to the process
 
     def __post_init__(self) -> None:
+        if self.torch_threads < 0:
+            raise ValueError(f"TORCH_NUM_THREADS must be >= 0, got {self.torch_threads}.")
+        if self.torch_threads == 0:
+            try:
+                object.__setattr__(self, "torch_threads", len(os.sched_getaffinity(0)))
+            except AttributeError:
+                object.__setattr__(self, "torch_threads", os.cpu_count() or 1)
         if not self.model_id.strip():
             raise ValueError("MODEL_ID must not be empty.")
         if self.device not in ("cpu", "cuda"):
@@ -101,11 +109,15 @@ class Settings:
         max_context = os.environ.get("MAX_CONTEXT", str(MODEL_CONTEXT_LENGTH)).strip()
         if not max_context.isdigit():
             raise ValueError(f"MAX_CONTEXT must be a positive integer, got {max_context!r}.")
+        threads = os.environ.get("TORCH_NUM_THREADS", "0").strip()
+        if not threads.isdigit():
+            raise ValueError(f"TORCH_NUM_THREADS must be a non-negative integer, got {threads!r}.")
         return cls(
             model_id=os.environ.get("MODEL_ID", CHRONOS2).strip(),
             device=os.environ.get("DEVICE", "cpu").strip().lower(),  # type: ignore[arg-type]
             max_context=int(max_context),
             log_level=os.environ.get("LOG_LEVEL", "INFO").strip().upper(),
+            torch_threads=int(threads),
         )
 
 
@@ -121,7 +133,16 @@ ForecasterLoader = Callable[[Settings], Forecaster]
 
 
 def load_chronos2_forecaster(settings: Settings) -> Forecaster:
-    """Default loader: Chronos-2 (or a fine-tuned checkpoint) on ``settings.device``."""
+    """Default loader: Chronos-2 (or a fine-tuned checkpoint) on ``settings.device``.
+
+    Sets PyTorch's CPU thread count explicitly (``TORCH_NUM_THREADS``, default: every core the
+    process may use). Containers can leave OpenMP at one thread, which makes CPU inference
+    several times slower than the hardware allows and is invisible from outside.
+    """
+    import torch
+
+    torch.set_num_threads(settings.torch_threads)
+    logger.info("PyTorch CPU threads: %d", torch.get_num_threads())
     pipeline = load_chronos2(settings.model_id, device=settings.device)
     return Chronos2Forecaster(pipeline, name=settings.model_id)
 

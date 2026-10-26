@@ -48,7 +48,7 @@ default `amazon/chronos-2`), `PYTHON_IMAGE` and `UV_IMAGE` (base images).
 | `DEVICE` | `cpu` | `cpu` or `cuda` (the image ships CPU-only PyTorch) |
 | `MAX_CONTEXT` | `8192` | Most recent steps per series fed to the model (1 to 8192) |
 | `LOG_LEVEL` | `INFO` | Python logging level |
-| `OMP_NUM_THREADS` | all cores | PyTorch CPU threads; set it when several containers share a host |
+| `TORCH_NUM_THREADS` | all cores available | PyTorch CPU threads, set explicitly at start-up (a container can otherwise leave OpenMP at one thread); lower it when several containers share a host |
 
 To serve a fine-tuned model, mount its folder read-only and point `MODEL_ID` at it. LoRA adapters
 load on top of `amazon/chronos-2`, which is already in the image:

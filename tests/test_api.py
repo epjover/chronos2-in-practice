@@ -487,3 +487,13 @@ def test_real_chronos2_on_cpu() -> None:
         assert np.all(low <= median) and np.all(median <= high)
         assert entry["predictions"] == pytest.approx(median.tolist())
         assert abs(median.mean() - level) < 2.0  # a daily sine of amplitude 1 around `level`
+
+
+def test_settings_read_torch_threads_and_default_to_the_available_cores(monkeypatch):
+    monkeypatch.delenv("TORCH_NUM_THREADS", raising=False)
+    assert api.Settings.from_env().torch_threads >= 1
+    monkeypatch.setenv("TORCH_NUM_THREADS", "3")
+    assert api.Settings.from_env().torch_threads == 3
+    monkeypatch.setenv("TORCH_NUM_THREADS", "many")
+    with pytest.raises(ValueError, match="TORCH_NUM_THREADS"):
+        api.Settings.from_env()

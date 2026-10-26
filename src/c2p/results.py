@@ -7,8 +7,10 @@ with :func:`load_results`, so a figure can never show something the CSV does not
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import platform
 import re
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -47,8 +49,68 @@ def load_results(name: str, paths: Paths, *, parse_dates: list[str] | None = Non
     return df
 
 
+def cpu_model() -> str:
+    """The CPU's marketing name (e.g. ``12th Gen Intel(R) Core(TM) i9-12900K``), best effort.
+
+    A timing without the CPU it ran on is not reproducible, and ``platform.processor()`` is
+    empty on Linux and a family code on Windows, so this reads the OS's own record instead.
+    """
+    system = platform.system()
+    try:
+        if system == "Linux":
+            with open("/proc/cpuinfo", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        elif system == "Darwin":
+            return subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=5
+            ).strip()
+        elif system == "Windows":
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+            )
+            return str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
+    except Exception:  # a missing name must never break a run
+        pass
+    return platform.processor() or platform.machine() or "unknown"
+
+
+def cores_available() -> int:
+    """CPU cores this process may use (the cgroup/affinity limit, not the socket's count)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # Windows and macOS have no affinity API
+        return os.cpu_count() or 1
+
+
+def hardware_info() -> dict[str, str]:
+    """CPU, cores, PyTorch thread count and GPU, so every timing names what it ran on.
+
+    ``torch_threads`` is the number PyTorch will actually use for CPU inference. It is not
+    always the core count: containers and sandboxes can leave OpenMP at one thread while
+    ``nproc`` says eight, and a benchmark that does not record it is a benchmark of the
+    environment, not of the model.
+    """
+    import torch
+
+    info = {
+        "cpu": cpu_model(),
+        "cores_available": str(cores_available()),
+        "torch_threads": str(torch.get_num_threads()),
+    }
+    if torch.cuda.is_available():
+        properties = torch.cuda.get_device_properties(0)
+        info["gpu"] = f"{properties.name} ({properties.total_memory / 2**30:.0f} GiB)"
+    else:
+        info["gpu"] = "none"
+    return info
+
+
 def run_metadata(*, device: str, fast_mode: bool, seed: int = SEED) -> dict[str, str]:
-    """Versions and settings of the current run, to print at the top of every notebook."""
+    """Versions, hardware and settings of the current run, to print at the top of every notebook."""
     meta = {
         "python": platform.python_version(),
         "device": device,
@@ -56,6 +118,7 @@ def run_metadata(*, device: str, fast_mode: bool, seed: int = SEED) -> dict[str,
         "seed": str(seed),
         "run_at_utc": datetime.now(UTC).strftime("%Y-%m-%d %H:%M"),
     }
+    meta.update(hardware_info())
     for package in _PACKAGES:
         try:
             meta[package] = importlib.metadata.version(package)

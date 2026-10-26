@@ -1,13 +1,13 @@
 """Fix the one defect every article found: calibrate Chronos-2's intervals and re-score 2018.
 
-Parts 2 to 5 all report the same thing — the 80% band covers about 73% of the hours on Spanish
-load, and far fewer in winter — and every lever they pull targets the median. This script pulls
+Parts 2 to 5 all report the same thing (the 80% band covers about 73% of the hours on Spanish
+load, and far fewer in winter) and every lever they pull targets the median. This script pulls
 the one lever that targets the bands, with the method that carries a finite-sample guarantee
 and needs no training: conformalized quantile regression (``c2p.conformal``).
 
 Protocol, chosen so that nothing here could have seen 2018:
 
-1. **Calibrate** on the second half of 2017 — the period article 4 used for early stopping —
+1. **Calibrate** on the second half of 2017 (the period article 4 used for early stopping),
    with the same day-ahead windows (24 h, cutoff 22:00 UTC, 2,048 h of context): 184 windows,
    4,416 hours of misses per quantile pair and horizon step.
 2. **Evaluate** on article 2's 365 windows of 2018, zero-shot against the two calibrated

@@ -1,4 +1,4 @@
-"""Create, invoke and — above all — delete a SageMaker real-time endpoint for Chronos-2.
+"""Create, invoke and, above all, delete a SageMaker real-time endpoint for Chronos-2.
 
 A real-time endpoint bills for every hour it exists, whether or not anything calls it. That is
 the single most expensive mistake in this series, so this script is built around teardown: it

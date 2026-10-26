@@ -1,7 +1,7 @@
 """Watch a deployed forecaster: log predictions, join actuals later, alert on drift.
 
 A backtest tells you whether a model *was* good on history. Monitoring answers the only question
-production cares about — is it still good — and the two differ in one structural way: in
+production cares about (is it still good?), and the two differ in one structural way: in
 production the actuals arrive *after* the forecast, often much later. Everything here is built
 around that delay.
 
@@ -66,7 +66,7 @@ def context_hash(context: pd.DataFrame, *, columns: Sequence[str] | None = None)
 
     Hashes the values (not the row order, which the schema already fixes) of ``columns``, or of
     every column except the id and timestamp. NaN hashes as NaN, so a gap that was filled later
-    changes the hash — which is the point: it is how you tell a model change from a data change
+    changes the hash, which is the point: it is how you tell a model change from a data change
     when you come back to an old forecast.
     """
     if context.empty:
@@ -105,7 +105,7 @@ def log_predictions(
 
     Columns: ``model_version``, ``input_hash``, ``cutoff``, the forecast-frame keys, the point
     forecast and the requested quantile columns, plus anything in ``extra``. The actual value is
-    deliberately absent — it does not exist yet.
+    deliberately absent: it does not exist yet.
     """
     if not model_version:
         raise ValueError("model_version must be a non-empty string: it is what you compare across.")

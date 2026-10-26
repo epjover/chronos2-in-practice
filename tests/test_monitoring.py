@@ -1,7 +1,7 @@
 """Tests for ``c2p.monitoring``: the prediction log, the delayed join and the alert rule.
 
 The point of these tests is the production order of events. A forecast is logged before its
-actual exists, so every test builds the log first and only then supplies actuals — including the
+actual exists, so every test builds the log first and only then supplies actuals, including the
 case where some never arrive.
 """
 

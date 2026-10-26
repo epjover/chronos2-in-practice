@@ -7,7 +7,7 @@ publishes them: the Price List Bulk API, which needs no credentials and stamps e
 with a version and a publication date.
 
 The output ``data/reference/cloud_prices.csv`` carries, for every row, the price, the SKU, the
-rate's effective date, the offer-file version and the URL it came from — enough for a reader to
+rate's effective date, the offer-file version and the URL it came from: enough for a reader to
 re-derive the number a year later, or to see at a glance that it has gone stale.
 
 Usage::

@@ -1,8 +1,8 @@
 """Serve Chronos-2 through AutoGluon Cloud: batch, real-time, or serverless with scale to zero.
 
 This is the path AWS recommends, and the only one of the three in this repository that can bill
-you nothing while idle. ``TimeSeriesFoundationModel`` wraps a pretrained checkpoint — no
-training job, no handler, no image — and exposes the three shapes a forecasting workload
+you nothing while idle. ``TimeSeriesFoundationModel`` wraps a pretrained checkpoint (no
+training job, no handler, no image) and exposes the three shapes a forecasting workload
 actually takes:
 
 - ``--mode batch``: one SageMaker job that reads a frame, writes forecasts to S3 and exits. The
@@ -47,7 +47,7 @@ PREDICTION_LENGTH = 24
 QUANTILES = [0.1, 0.5, 0.9]
 CONTEXT_HOURS = 2048
 # AutoGluon Cloud's own registry defaults, for reference: batch ml.m5.2xlarge,
-# real-time ml.g5.xlarge. Serverless takes no instance type — only memory and concurrency.
+# real-time ml.g5.xlarge. Serverless takes no instance type, only memory and concurrency.
 BATCH_INSTANCE = "ml.m5.2xlarge"
 REALTIME_INSTANCE = "ml.c7i.xlarge"
 SERVERLESS_MEMORY_MB = 6144
@@ -151,7 +151,7 @@ def delete(args) -> None:
 
     TimeSeriesEndpoint(args.endpoint).delete_endpoint()
     print(f"Deleted endpoint {args.endpoint}; billing stops.")
-    print(f"Still in S3: {args.s3_path or '<s3 path>'} — remove it with `aws s3 rm --recursive`.")
+    print(f"Still in S3: {args.s3_path or '<s3 path>'}; remove it with `aws s3 rm --recursive`.")
 
 
 def plan(args) -> None:

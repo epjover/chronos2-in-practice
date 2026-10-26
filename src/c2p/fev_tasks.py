@@ -1,7 +1,7 @@
 """Load a published fev-bench task and restate it in this repository's own protocol.
 
-Article 3 replicates the EPF-DE task of fev-bench — German day-ahead electricity price with the
-grid operator's load and renewable forecasts as known covariates — before applying the same
+Article 3 replicates the EPF-DE task of fev-bench (German day-ahead electricity price with the
+grid operator's load and renewable forecasts as known covariates) before applying the same
 design to Spanish prices. Replicating it means using the *published* task definition rather than
 a similar-looking one of our own, so this module does two things:
 

@@ -1,14 +1,14 @@
 """Make the prediction intervals honest: conformal calibration of Chronos-2's quantiles.
 
-Every part of the series found the same defect — the 80% interval covers about 73% of the
-hours, less in winter — and none of them fixed it, because the levers they pulled (context,
+Every part of the series found the same defect (the 80% interval covers about 73% of the
+hours, less in winter) and none of them fixed it, because the levers they pulled (context,
 covariates, fine-tuning) all target the median. This module targets the bands directly, with the
 one method that comes with a guarantee and no retraining: **conformalized quantile regression**
 (CQR, Romano et al., 2019).
 
 The idea fits in a sentence. On a calibration period where the actuals are known, measure by how
-much the model's interval missed — ``max(lower - y, y - upper)``, positive when the actual fell
-outside — and widen every future interval by the quantile of those misses that makes the
+much the model's interval missed, ``max(lower - y, y - upper)``, positive when the actual fell
+outside, and widen every future interval by the quantile of those misses that makes the
 calibration coverage equal to the nominal level. The adjustment is learned once, per quantile
 pair and per horizon step, and applied as a post-processing step to any later forecast. It can
 also *narrow* an interval that was too wide.
@@ -16,7 +16,7 @@ also *narrow* an interval that was too wide.
 Two scalings are offered. ``additive`` learns a shift in the target's units, which is the
 textbook CQR and the right choice for one series. ``scaled`` divides the miss by the model's own
 interval width first, so the correction is a multiplier that travels across series of different
-levels — the choice for a frame of many series or for a model whose width already tracks
+levels: the choice for a frame of many series or for a model whose width already tracks
 difficulty.
 
 Nothing here knows about Chronos-2. :class:`ConformalForecaster` wraps any ``Forecaster`` and

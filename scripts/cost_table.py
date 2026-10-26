@@ -7,7 +7,7 @@ per device, so ``results/bench_latency_cuda.csv`` and ``results/bench_latency_cp
 ``scripts/fetch_cloud_prices.py``).
 
 One honesty constraint shapes the output. Throughput measured on a local machine does **not**
-transfer to a cloud instance — different cores, different clocks, different memory bandwidth —
+transfer to a cloud instance (different cores, different clocks, different memory bandwidth),
 so this script never pretends it does. It reports three things instead:
 
 1. **Rates**: hourly and monthly cost of an always-on endpoint, which is what you actually pay
@@ -15,7 +15,7 @@ so this script never pretends it does. It reports three things instead:
 2. **Cost per million forecasts** at the throughput *we measured*, labelled with the machine it
    was measured on, and with each instance's ``vcpu`` count beside it. The CPU measurement comes
    from one machine with a fixed core count, so a row for an instance with fewer vCPUs is
-   optimistic by roughly the ratio of cores — compare like with like. It is an order-of-magnitude
+   optimistic by roughly the ratio of cores; compare like with like. It is an order-of-magnitude
    figure, not a quote.
 3. **The break-even ratio**: how many times faster a GPU instance must be than a CPU one before
    it is the cheaper way to serve the same volume. That number depends only on the published

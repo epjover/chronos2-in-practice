@@ -2,8 +2,8 @@
 
 Article 5 needs two numbers an accuracy benchmark never reports: how long one ``predict`` call
 takes, and how many series per second a machine sustains. Both depend on three things the caller
-controls — how many series go in one call, how much context each carries, and which checkpoint is
-loaded — so this script sweeps all three and writes one row per combination.
+controls (how many series go in one call, how much context each carries, and which checkpoint is
+loaded), so this script sweeps all three and writes one row per combination.
 
 Two deliberate choices:
 
@@ -14,7 +14,7 @@ Two deliberate choices:
   autotuning) and a shared machine produces outliers, so the median of a few timed runs after one
   discarded warm-up is the number a service would actually see.
 - **Threads set explicitly, hardware recorded.** PyTorch's CPU thread count is not always the
-  core count — a container can leave OpenMP at one thread while ``nproc`` says eight, and the
+  core count: a container can leave OpenMP at one thread while ``nproc`` says eight, and the
   first version of this benchmark measured exactly that: 3x slower than the machine could do.
   The script now sets ``torch.set_num_threads`` itself (``--threads``, default: every core the
   process may use) and writes the CPU model, the core count and the thread count into every row.

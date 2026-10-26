@@ -1,7 +1,7 @@
 """Figures of the production article (part 5): throughput and cost per million forecasts.
 
 Two charts, for the two questions that decide a deployment. :func:`plot_throughput` answers *how
-many series per second does this machine sustain, and where does batching stop helping* — the
+many series per second does this machine sustain, and where does batching stop helping*: the
 answer is a curve against batch size, one line per (device, checkpoint), on log axes because the
 range spans three orders of magnitude. :func:`plot_cost_per_million` answers *what does that
 cost*, by joining the same throughput with published hourly rates.

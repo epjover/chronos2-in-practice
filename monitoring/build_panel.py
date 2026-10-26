@@ -3,15 +3,15 @@
 Monitoring is hard to demonstrate honestly, because a convincing demo needs a year of
 predictions made *before* their actuals existed. A rolling-origin backtest is exactly that, run
 in fast-forward: at each cutoff the model sees only the past, the forecast is written to a
-prediction log with no actual attached, and the actuals are joined afterwards — the same order of
+prediction log with no actual attached, and the actuals are joined afterwards, the same order of
 events as a real deployment, with the waiting removed.
 
 What it produces, all under ``results/``:
 
-- ``09_monitoring_log.csv`` — one row per forecast step, with model version and input hash.
-- ``09_monitoring_rolling.csv`` — rolling WAPE and 80% coverage per cutoff, with the alert flag.
-- ``09_monitoring_drift.csv`` — input drift between the first and last quarter of the year.
-- ``results/figures/09_monitoring_panel.png`` — the panel an operator would look at.
+- ``09_monitoring_log.csv``: one row per forecast step, with model version and input hash.
+- ``09_monitoring_rolling.csv``: rolling WAPE and 80% coverage per cutoff, with the alert flag.
+- ``09_monitoring_drift.csv``: input drift between the first and last quarter of the year.
+- ``results/figures/09_monitoring_panel.png``: the panel an operator would look at.
 
 Usage::
 

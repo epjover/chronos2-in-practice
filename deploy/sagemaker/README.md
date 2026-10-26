@@ -17,7 +17,7 @@ as the FastAPI service, so the only thing that changes between the two is who ru
 
 ## Prerequisites
 
-`boto3` and the SageMaker SDK are deliberately *not* dependencies of this project — nothing else
+`boto3` and the SageMaker SDK are deliberately *not* dependencies of this project; nothing else
 here needs an AWS account. Add them to a separate group when you want them:
 
 ```bash
@@ -40,12 +40,12 @@ uv run --group cloud python deploy/sagemaker/deploy_endpoint.py --yes \
 # 3. One request, with the server-side latency the endpoint reports
 uv run --group cloud python deploy/sagemaker/deploy_endpoint.py --invoke
 
-# 4. Delete it — endpoint, endpoint configuration and model registration
+# 4. Delete it: endpoint, endpoint configuration and model registration
 uv run --group cloud python deploy/sagemaker/deploy_endpoint.py --delete --yes
 ```
 
 Step 4 does not remove the `model.tar.gz` in S3 (storage, cents per month) or any Studio or
-notebook instance you used to run these commands — those are separate meters. `aws s3 rm` and
+notebook instance you used to run these commands; those are separate meters. `aws s3 rm` and
 the Studio console handle them.
 
 To serve a fine-tuned model from article 4, package the checkpoint into the artifact:
@@ -68,7 +68,7 @@ against a small GPU one, and it is decided by how many series you send per call.
 uv run python scripts/fetch_cloud_prices.py --region us-east-1
 ```
 
-That script reads the public AWS Price List API — no credentials, no resources, no cost — and
+That script reads the public AWS Price List API (no credentials, no resources, no cost) and
 records the SKU, the effective date and the offer-file version next to every price, so a stale
 table is visible rather than silently wrong.
 

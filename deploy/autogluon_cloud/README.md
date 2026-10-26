@@ -19,7 +19,7 @@ uv add --group cloud "autogluon.cloud>=0.7" "autogluon.timeseries>=1.6"
 ```
 
 Plus an S3 prefix and an IAM role AutoGluon Cloud can assume (its documentation lists the
-required policies — they are broader than the SageMaker execution role in `../sagemaker`,
+required policies; they are broader than the SageMaker execution role in `../sagemaker`,
 because the library also launches jobs on your behalf).
 
 ## Use it

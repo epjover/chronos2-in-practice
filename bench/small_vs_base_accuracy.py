@@ -1,8 +1,8 @@
 """Accuracy of ``chronos-2-small`` against ``chronos-2`` on the series' day-ahead protocol.
 
 ``bench_cpu_gpu.py`` measures how much faster the 28M-parameter checkpoint is. Speed is only
-half of a trade, so this script measures the other half with the exact protocol of article 2 —
-365 day-ahead windows over 2018, 24-hour horizon, 2,048 hours of context, 11 quantiles — and
+half of a trade, so this script measures the other half with the exact protocol of article 2
+(365 day-ahead windows over 2018, 24-hour horizon, 2,048 hours of context, 11 quantiles) and
 reports the skill of the small model against the base one with a bootstrap interval over windows.
 
 The two numbers belong side by side: a checkpoint that is 3-4x faster and 1% worse is a

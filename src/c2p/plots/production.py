@@ -175,10 +175,10 @@ def plot_cost_per_million(
             ax.annotate(
                 f"Rates alone: {row['gpu_instance']} must be "
                 f"{row['speedup_to_break_even']:.1f}x faster than {row['cpu_instance']}",
-                (0.995, 0.02),
+                (0.995, 0.98),  # top right: the GPU bars are short, so the corner is empty
                 xycoords="axes fraction",
                 ha="right",
-                va="bottom",
+                va="top",
                 fontsize=9,
                 color=INK_SECONDARY,
             )

@@ -1,2 +1,2 @@
 cpu_instance,cpu_usd_per_hour,gpu_instance,gpu_usd_per_hour,speedup_to_break_even
-ml.c7i.xlarge,0.214,ml.g5.xlarge,1.408,6.579439252336448
+ml.c7i.2xlarge,0.428,ml.g5.xlarge,1.408,3.289719626168224

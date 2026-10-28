@@ -119,14 +119,21 @@ def cost_per_million(rates: pd.DataFrame, throughput: pd.DataFrame) -> pd.DataFr
                     "series_per_second": measurement["series_per_second"],
                     "forecasts_per_hour": per_hour,
                     "usd_per_million_forecasts": rate["usd_per_hour"] / per_hour * 1e6,
-                    "measured_on": measurement["gpu"]
-                    or f"{measurement['cpu']} ({measurement['torch_threads']} threads)",
+                    "measured_on": _measured_on(measurement),
                 }
             )
     frame = pd.DataFrame(rows)
     return frame.sort_values(
         ["context_length", "model", "usd_per_million_forecasts"], ignore_index=True
     )
+
+
+def _measured_on(measurement: pd.Series) -> str:
+    """Name the hardware behind a throughput row: the GPU, else the CPU and its thread count."""
+    gpu = measurement.get("gpu")
+    if isinstance(gpu, str) and gpu:  # an empty CSV cell arrives as NaN, which is truthy
+        return gpu
+    return f"{measurement['cpu']} ({int(measurement['torch_threads'])} threads)"
 
 
 def break_even(rates: pd.DataFrame, *, cpu_instance: str, gpu_instance: str) -> pd.DataFrame:
@@ -194,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=["bench_latency_cuda", "bench_latency_cpu"],
         help="one results/<name>.csv per device, concatenated",
     )
-    parser.add_argument("--cpu-instance", default="ml.c7i.xlarge")
+    parser.add_argument("--cpu-instance", default="ml.c7i.2xlarge")
     parser.add_argument("--gpu-instance", default="ml.g5.xlarge")
     args = parser.parse_args(argv)
 

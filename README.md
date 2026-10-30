@@ -141,7 +141,8 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 ├── examples/
 │   └── forecast_your_series.py  # checklist + zero-shot forecast + backtest on your CSV
 ├── bench/
-│   ├── bench_cpu_gpu.py    # latency and throughput vs batch, context, checkpoint, device
+│   ├── bench_cpu_gpu.py    # latency and throughput vs batch, context, checkpoint, device (30 timed calls per cell, percentiles, raw samples)
+│   ├── summarise_stability.py  # within-run spread and run-to-run drift of those timings
 │   └── small_vs_base_accuracy.py  # chronos-2-small vs chronos-2 on the day-ahead protocol
 ├── deploy/
 │   ├── fastapi/            # the container you run: app.py, Dockerfile, smoke_test.py

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import matplotlib
+import numpy as np
 import pandas as pd
 import pytest
 
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
+
 from c2p.plots.production import (
     device_label,
     plot_cost_per_million,
     plot_coverage_by_month,
+    plot_latency_spread,
     plot_throughput,
 )
 
@@ -33,6 +37,11 @@ def bench_frame() -> pd.DataFrame:
                             "context_length": context_length,
                             "batch_size": batch,
                             "series_per_second": speed * factor * batch**0.5,
+                            "seconds_median": batch / (speed * factor * batch**0.5),
+                            "seconds_p05": 0.95 * batch / (speed * factor * batch**0.5),
+                            "seconds_p95": 1.20 * batch / (speed * factor * batch**0.5),
+                            "series_per_second_p05": speed * factor * batch**0.5 / 1.20,
+                            "series_per_second_p95": speed * factor * batch**0.5 / 0.95,
                         }
                     )
     return pd.DataFrame(rows)
@@ -59,6 +68,39 @@ def cost_frame() -> pd.DataFrame:
 
 
 # --- throughput -----------------------------------------------------------------------------
+
+
+def test_throughput_draws_a_spread_band_when_percentiles_are_present() -> None:
+    ax = plot_throughput(bench_frame(), context_length=2048)
+    bands = [c for c in ax.collections if type(c).__name__ == "FillBetweenPolyCollection"]
+    assert len(bands) == 4  # one per (model, device)
+    plt.close(ax.figure)
+
+
+def test_throughput_without_percentiles_draws_no_band() -> None:
+    bench = bench_frame().drop(columns=["series_per_second_p05", "series_per_second_p95"])
+    ax = plot_throughput(bench, context_length=2048)
+    bands = [c for c in ax.collections if type(c).__name__ == "FillBetweenPolyCollection"]
+    assert bands == []
+    plt.close(ax.figure)
+
+
+# --- latency spread -------------------------------------------------------------------------
+
+
+def test_latency_spread_marks_p95_relative_to_median() -> None:
+    ax = plot_latency_spread(bench_frame(), context_length=2048, title="spread")
+    scatters = [c for c in ax.collections if type(c).__name__ == "PathCollection"]
+    assert len(scatters) == 4
+    highs = np.concatenate([c.get_offsets()[:, 1] for c in scatters])
+    assert np.allclose(highs, 20.0)  # p95 is 1.20x the median in the fixture
+    assert ax.get_ylabel().startswith("Call duration")
+    plt.close(ax.figure)
+
+
+def test_latency_spread_requires_percentile_columns() -> None:
+    with pytest.raises(ValueError, match="missing the columns"):
+        plot_latency_spread(bench_frame().drop(columns=["seconds_p95"]), context_length=2048)
 
 
 def test_throughput_draws_one_line_per_model_and_device():

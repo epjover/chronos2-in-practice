@@ -10,9 +10,13 @@ Two deliberate choices:
 - **Real data, tiled.** The series are copies of the Spanish load series with distinct ids, not
   random noise. Throughput depends on shapes rather than values, but real data keeps the numbers
   honest if anyone later puts caching or early exit in the loop.
-- **Median of repeats after a warm-up.** The first call pays one-off costs (CUDA context, kernel
-  autotuning) and a shared machine produces outliers, so the median of a few timed runs after one
-  discarded warm-up is the number a service would actually see.
+- **Many repeats, the whole distribution reported.** The first call pays one-off costs (CUDA
+  context, kernel autotuning) and is discarded. Each cell is then timed ``--repeats`` times (30
+  by default) or until ``--budget`` seconds have been spent, whichever comes first, with a floor
+  of ``MIN_REPEATS``. The summary row carries the median (the throughput number the articles
+  quote), the mean, the standard deviation, the 5th and 95th percentiles, the fastest and the
+  slowest call, and the coefficient of variation; every individual timing is also written to
+  ``results/<name>_samples.csv``, so the spread can be plotted or re-summarised later.
 - **Threads set explicitly, hardware recorded.** PyTorch's CPU thread count is not always the
   core count: a container can leave OpenMP at one thread while ``nproc`` says eight, and the
   first version of this benchmark measured exactly that: 3x slower than the machine could do.
@@ -24,7 +28,9 @@ Usage::
     uv run python bench/bench_cpu_gpu.py --device cpu
     uv run python bench/bench_cpu_gpu.py --device cuda
 
-Results go to ``results/bench_latency.csv``; ``--fast`` runs a reduced sweep for a smoke test.
+Results go to ``results/bench_latency.csv`` (one row per cell) and
+``results/bench_latency_samples.csv`` (one row per timed call); ``--fast`` runs a reduced sweep
+for a smoke test.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ import argparse
 import time
 from collections.abc import Sequence
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -48,6 +55,9 @@ DEFAULT_CONTEXTS = (512, 2048)
 FAST_BATCHES = (1, 8)
 FAST_CONTEXTS = (512,)
 QUANTILES = (0.1, 0.5, 0.9)
+DEFAULT_REPEATS = 30
+DEFAULT_BUDGET_S = 120.0
+MIN_REPEATS = 10
 
 
 def tile_series(series: pd.DataFrame, *, n_series: int, context_length: int) -> pd.DataFrame:
@@ -62,9 +72,14 @@ def tile_series(series: pd.DataFrame, *, n_series: int, context_length: int) -> 
 
 
 def time_predict(
-    pipeline, frame: pd.DataFrame, *, horizon: int, repeats: int
-) -> tuple[float, float]:
-    """Median and fastest seconds over ``repeats`` timed calls, after one discarded warm-up."""
+    pipeline, frame: pd.DataFrame, *, horizon: int, repeats: int, budget_s: float = float("inf")
+) -> list[float]:
+    """Seconds of each of up to ``repeats`` timed calls, after one discarded warm-up.
+
+    Stops early once ``budget_s`` seconds of timed calls have accumulated, but never before
+    ``MIN_REPEATS`` calls (or ``repeats`` if that is smaller), so a slow cell such as 128 series
+    at 2,048 hours on a CPU does not take an hour while a fast one still gets a full sample.
+    """
 
     def call() -> None:
         pipeline.predict_df(
@@ -77,18 +92,42 @@ def time_predict(
             freq=FREQ,
         )
 
-    call()
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    times = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        call()
+    def sync() -> None:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+
+    call()
+    sync()
+    times: list[float] = []
+    floor = min(MIN_REPEATS, repeats)
+    while len(times) < repeats:
+        start = time.perf_counter()
+        call()
+        sync()
         times.append(time.perf_counter() - start)
-    times.sort()
-    return times[len(times) // 2], times[0]
+        if len(times) >= floor and sum(times) >= budget_s:
+            break
+    return times
+
+
+def summarise_times(times: Sequence[float]) -> dict[str, float]:
+    """Location, spread and tails of a sample of call durations, in seconds."""
+    if len(times) == 0:
+        raise ValueError("summarise_times needs at least one timing.")
+    sample = np.asarray(times, dtype=float)
+    mean = float(sample.mean())
+    std = float(sample.std(ddof=1)) if len(sample) > 1 else 0.0
+    return {
+        "seconds_median": float(np.median(sample)),
+        "seconds_mean": mean,
+        "seconds_std": std,
+        "seconds_p05": float(np.percentile(sample, 5)),
+        "seconds_p95": float(np.percentile(sample, 95)),
+        "seconds_min": float(sample.min()),
+        "seconds_max": float(sample.max()),
+        "cv": std / mean if mean > 0 else float("nan"),
+        "repeats": len(sample),
+    }
 
 
 def benchmark(
@@ -100,8 +139,9 @@ def benchmark(
     horizon: int,
     repeats: int,
     threads: int,
-) -> pd.DataFrame:
-    """One row per (model, context, batch): latency, throughput and peak VRAM."""
+    budget_s: float = DEFAULT_BUDGET_S,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Summary rows, one per (model, context, batch), and the raw timing samples behind them."""
     set_seed()
     torch.set_num_threads(threads)
     cpu = cpu_model()
@@ -109,6 +149,7 @@ def benchmark(
     raw = spain_energy_frame()[[ID_COL, TIMESTAMP_COL, LOAD]]
     series, _ = validate_and_prepare(raw, freq=FREQ, target=LOAD)
     rows = []
+    samples = []
     for model_id in models:
         pipeline = load_chronos2(model_id, device=device)
         parameters = parameter_count(pipeline)
@@ -118,38 +159,51 @@ def benchmark(
                 if device == "cuda":
                     torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats()
-                median, fastest = time_predict(pipeline, frame, horizon=horizon, repeats=repeats)
+                times = time_predict(
+                    pipeline, frame, horizon=horizon, repeats=repeats, budget_s=budget_s
+                )
+                stats = summarise_times(times)
                 peak_vram = (
                     torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else float("nan")
                 )
+                hardware = {
+                    "model": model_id,
+                    "params_m": parameters / 1e6,
+                    "device": device,
+                    "cpu": cpu,
+                    "cores_available": cores_available(),
+                    "torch_threads": threads,
+                    "gpu": torch.cuda.get_device_name(0) if device == "cuda" else "",
+                    "context_length": context_length,
+                    "batch_size": batch,
+                    "horizon": horizon,
+                }
                 rows.append(
                     {
-                        "model": model_id,
-                        "params_m": parameters / 1e6,
-                        "device": device,
-                        "cpu": cpu,
-                        "cores_available": cores_available(),
-                        "torch_threads": threads,
-                        "gpu": torch.cuda.get_device_name(0) if device == "cuda" else "",
-                        "context_length": context_length,
-                        "batch_size": batch,
-                        "horizon": horizon,
-                        "seconds_median": median,
-                        "seconds_min": fastest,
-                        "series_per_second": batch / median,
+                        **hardware,
+                        **stats,
+                        "series_per_second": batch / stats["seconds_median"],
+                        "series_per_second_p05": batch / stats["seconds_p95"],  # slow calls
+                        "series_per_second_p95": batch / stats["seconds_p05"],  # fast calls
                         "peak_vram_mb": peak_vram,
-                        "repeats": repeats,
                     }
                 )
+                samples.extend(
+                    {**hardware, "repeat": index, "seconds": seconds}
+                    for index, seconds in enumerate(times)
+                )
+                median = stats["seconds_median"]
                 print(
                     f"{model_id:<28} ctx {context_length:>5} batch {batch:>4}: "
-                    f"{median * 1000:8.1f} ms -> {batch / median:8.1f} series/s",
+                    f"{median * 1000:8.1f} ms (p5 {stats['seconds_p05'] * 1000:7.1f}, "
+                    f"p95 {stats['seconds_p95'] * 1000:7.1f}, n={stats['repeats']:>2}) "
+                    f"-> {batch / median:8.1f} series/s",
                     flush=True,
                 )
         del pipeline
         if device == "cuda":
             torch.cuda.empty_cache()
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), pd.DataFrame(samples)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -159,7 +213,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--batches", nargs="+", type=int, default=None)
     parser.add_argument("--contexts", nargs="+", type=int, default=None)
     parser.add_argument("--horizon", type=int, default=24)
-    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=DEFAULT_REPEATS,
+        help=f"timed calls per cell after the warm-up (default {DEFAULT_REPEATS})",
+    )
+    parser.add_argument(
+        "--budget",
+        type=float,
+        default=DEFAULT_BUDGET_S,
+        help=f"seconds of timed calls per cell before stopping early, floor {MIN_REPEATS} "
+        f"calls (default {DEFAULT_BUDGET_S:.0f})",
+    )
     parser.add_argument(
         "--threads",
         type=int,
@@ -175,17 +241,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     batches = args.batches or (FAST_BATCHES if args.fast else DEFAULT_BATCHES)
     contexts = args.contexts or (FAST_CONTEXTS if args.fast else DEFAULT_CONTEXTS)
 
-    results = benchmark(
+    results, samples = benchmark(
         device=args.device,
         models=args.models,
         batches=batches,
         contexts=contexts,
         horizon=args.horizon,
-        repeats=1 if args.fast else args.repeats,
+        repeats=3 if args.fast else args.repeats,
         threads=args.threads or cores_available(),
+        budget_s=args.budget,
     )
-    path = save_results(results, args.name, get_paths())
-    print(f"\nSaved {path}")
+    paths = get_paths()
+    path = save_results(results, args.name, paths)
+    samples_path = save_results(samples, f"{args.name}_samples", paths)
+    print(f"\nSaved {path} and {samples_path}")
     return 0
 
 

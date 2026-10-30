@@ -66,7 +66,10 @@ def plot_throughput(
 
     ``bench`` is ``results/bench_latency.csv`` from ``bench/bench_cpu_gpu.py``. One context
     length at a time: mixing them puts four lines of two different shapes on one axis and the
-    saturation point of each becomes unreadable.
+    saturation point of each becomes unreadable. When the frame carries
+    ``series_per_second_p05`` and ``series_per_second_p95`` (the throughput at the slowest and
+    fastest 5% of calls), each line gets a shaded band between them; on a log axis a band too
+    thin to see is the honest picture of a stable measurement.
     """
     required = ["model", "device", "gpu", "context_length", "batch_size", "series_per_second"]
     missing = [column for column in required if column not in bench.columns]
@@ -82,6 +85,17 @@ def plot_throughput(
         for (model, device), group in rows.groupby(["model", "device"], sort=True):
             group = group.sort_values("batch_size")
             is_small = "small" in str(model)
+            color = _GPU_COLOR if device == "cuda" else _CPU_COLOR
+            if {"series_per_second_p05", "series_per_second_p95"} <= set(group.columns):
+                ax.fill_between(
+                    group["batch_size"],
+                    group["series_per_second_p05"],
+                    group["series_per_second_p95"],
+                    color=color,
+                    alpha=0.18,
+                    linewidth=0,
+                    zorder=2,
+                )
             ax.plot(
                 group["batch_size"],
                 group["series_per_second"],
@@ -89,7 +103,7 @@ def plot_throughput(
                 markersize=5,
                 linewidth=1.8,
                 linestyle=_SMALL_STYLE if is_small else "solid",
-                color=_GPU_COLOR if device == "cuda" else _CPU_COLOR,
+                color=color,
                 label=device_label(group.iloc[0]),
                 zorder=3,
             )
@@ -111,6 +125,68 @@ def plot_throughput(
         ax.get_xaxis().set_major_formatter(lambda value, _: f"{value:g}")
         ax.set_xlabel("Series per request")
         ax.set_ylabel("Series per second")
+        _style_axes(ax, grid="y")
+        handles, labels = ax.get_legend_handles_labels()
+        _legend_above(ax, handles, labels, title)
+    return ax
+
+
+def plot_latency_spread(
+    bench: pd.DataFrame,
+    *,
+    context_length: int,
+    title: str | None = None,
+    ax: Axes | None = None,
+) -> Axes:
+    """How much each timed call deviates from its cell's median, as p5 and p95 in percent.
+
+    One marker pair per (checkpoint, device, batch size) at one context length: the 5th and the
+    95th percentile of call duration relative to the median, so a cell whose calls all take the
+    same time sits on the zero line and a noisy one spreads out. The number an operator wants is
+    the p95 side: how much slower than typical the slow calls are. Needs the ``seconds_median``,
+    ``seconds_p05`` and ``seconds_p95`` columns of ``bench/bench_cpu_gpu.py``.
+    """
+    required = ["model", "device", "gpu", "context_length", "batch_size", "seconds_median"]
+    required += ["seconds_p05", "seconds_p95"]
+    missing = [column for column in required if column not in bench.columns]
+    if missing:
+        raise ValueError(f"bench is missing the columns {missing}.")
+    rows = bench[bench["context_length"] == context_length]
+    if rows.empty:
+        available = sorted(bench["context_length"].unique())
+        raise ValueError(f"No rows with context_length={context_length}; available: {available}.")
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 4.6), layout="constrained")
+        groups = list(rows.groupby(["model", "device"], sort=True))
+        batches = sorted(rows["batch_size"].unique())
+        width = 0.8 / max(len(groups), 1)
+        for offset, ((model, device), group) in enumerate(groups):
+            group = group.sort_values("batch_size")
+            is_small = "small" in str(model)
+            color = _GPU_COLOR if device == "cuda" else _CPU_COLOR
+            x = (
+                np.array([batches.index(b) for b in group["batch_size"]])
+                + (offset - (len(groups) - 1) / 2) * width
+            )
+            low = (group["seconds_p05"] / group["seconds_median"] - 1) * 100
+            high = (group["seconds_p95"] / group["seconds_median"] - 1) * 100
+            ax.vlines(x, low, high, color=color, linewidth=6, alpha=0.35 if is_small else 0.75)
+            ax.scatter(
+                x,
+                high,
+                marker="^" if is_small else "o",
+                s=28,
+                color=color,
+                zorder=3,
+                label=device_label(group.iloc[0]),
+            )
+        ax.axhline(0, color=INK_SECONDARY, linewidth=0.8)
+        ax.set_xlim(-0.6, len(batches) - 0.4)
+        ax.set_xticks(range(len(batches)), labels=[f"{b:g}" for b in batches])
+        ax.set_xlabel("Series per request")
+        ax.set_ylabel("Call duration vs. median (%)")
+        ax.yaxis.set_major_formatter(lambda value, _: f"{value:+.0f}%")
         _style_axes(ax, grid="y")
         handles, labels = ax.get_legend_handles_labels()
         _legend_above(ax, handles, labels, title)

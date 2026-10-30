@@ -52,7 +52,7 @@ _MIN_ETS_POINTS = 7
 
 
 def _interval_level(quantile_level: float) -> int | float:
-    """statsforecast ``level`` (in %) of the central interval bounded by ``quantile_level``.
+    """Statsforecast ``level`` (in %) of the central interval bounded by ``quantile_level``.
 
     Level L has bounds at quantiles (1 - L/100) / 2 and 1 - (1 - L/100) / 2, so the 0.1 and 0.9
     quantiles are the bounds of the 80% interval. Rounded so 0.15 maps to 70, not 70.00000000001.

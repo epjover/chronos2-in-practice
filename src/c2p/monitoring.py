@@ -202,8 +202,8 @@ def rolling_metrics(
         )
     )
     frames = []
-    for _version, group in per_cutoff.groupby(MODEL_VERSION_COL, sort=True):
-        group = group.sort_values(CUTOFF_COL)
+    for _version, rows in per_cutoff.groupby(MODEL_VERSION_COL, sort=True):
+        group = rows.sort_values(CUTOFF_COL)
         rolling = group.rolling(window, min_periods=min_periods or window)
         frames.append(
             group.assign(
@@ -228,8 +228,8 @@ def retraining_alerts(rolling: pd.DataFrame, *, wape_threshold: float) -> pd.Dat
     if "wape" not in rolling.columns:
         raise ValueError("rolling lacks a 'wape' column; run rolling_metrics first.")
     frames = []
-    for _, group in rolling.groupby(MODEL_VERSION_COL, sort=True):
-        group = group.sort_values(CUTOFF_COL).copy()
+    for _, rows in rolling.groupby(MODEL_VERSION_COL, sort=True):
+        group = rows.sort_values(CUTOFF_COL).copy()
         group[ALERT_COL] = group["wape"] > wape_threshold
         group["first_breach"] = group[ALERT_COL] & ~group[ALERT_COL].shift(fill_value=False)
         frames.append(group)

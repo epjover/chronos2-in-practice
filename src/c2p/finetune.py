@@ -432,8 +432,10 @@ class FinetuneResult:
         return self.steps < self.num_steps
 
     def losses(self) -> pd.DataFrame:
-        """Training and validation loss per logged step (columns ``step``, ``train_loss``,
-        ``eval_loss``), for learning-curve plots."""
+        """Training and validation loss per logged step, for learning-curve plots.
+
+        Columns: ``step``, ``train_loss``, ``eval_loss``.
+        """
         rows: dict[int, dict[str, float]] = {}
         for entry in self.log_history:
             step = int(entry["step"])

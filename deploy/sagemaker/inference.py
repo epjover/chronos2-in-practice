@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -52,8 +53,8 @@ def model_fn(model_dir: str, context: Any = None) -> Chronos2Forecaster:
     Hub, which requires the endpoint to have network access.
     """
     del context
-    local = os.path.join(model_dir, "chronos-2")
-    model_id = local if os.path.isdir(local) else os.environ.get("MODEL_ID", CHRONOS2)
+    local = Path(model_dir) / "chronos-2"
+    model_id = str(local) if local.is_dir() else os.environ.get("MODEL_ID", CHRONOS2)
     device = os.environ.get("DEVICE", "cpu")
     logger.info("Loading %s on %s", model_id, device)
     return Chronos2Forecaster(load_chronos2(model_id, device=device))
@@ -61,7 +62,7 @@ def model_fn(model_dir: str, context: Any = None) -> Chronos2Forecaster:
 
 def input_fn(body: str | bytes, content_type: str = JSON_CONTENT_TYPE) -> dict[str, Any]:
     """Parse and validate the request body; the frame it returns is model-ready."""
-    if content_type.split(";")[0].strip() != JSON_CONTENT_TYPE:
+    if content_type.split(";", maxsplit=1)[0].strip() != JSON_CONTENT_TYPE:
         raise ValueError(f"Unsupported content type {content_type!r}; send {JSON_CONTENT_TYPE}.")
     payload = json.loads(body)
     series = payload.get("series")
@@ -130,13 +131,13 @@ def predict_fn(request: dict[str, Any], model: Chronos2Forecaster) -> dict[str, 
 
 def output_fn(prediction: dict[str, Any], accept: str = JSON_CONTENT_TYPE) -> tuple[str, str]:
     """Serialise one forecast per series, in the FastAPI service's response shape."""
-    if accept.split(";")[0].strip() not in (JSON_CONTENT_TYPE, "*/*"):
+    if accept.split(";", maxsplit=1)[0].strip() not in (JSON_CONTENT_TYPE, "*/*"):
         raise ValueError(f"Unsupported accept type {accept!r}; ask for {JSON_CONTENT_TYPE}.")
     forecast = prediction["forecast"]
     levels = prediction["quantile_levels"]
     forecasts = []
-    for item_id, group in forecast.groupby(ID_COL, sort=False):
-        group = group.sort_values(TIMESTAMP_COL)
+    for item_id, rows in forecast.groupby(ID_COL, sort=False):
+        group = rows.sort_values(TIMESTAMP_COL)
         forecasts.append(
             {
                 "item_id": str(item_id),

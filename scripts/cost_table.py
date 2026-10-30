@@ -39,7 +39,7 @@ from collections.abc import Sequence
 
 import pandas as pd
 
-from c2p.config import get_paths
+from c2p.config import Paths, get_paths
 from c2p.plots.production import plot_cost_per_million, plot_throughput
 from c2p.plotting import save_figure, set_style
 from c2p.results import load_results, save_results
@@ -61,7 +61,8 @@ SERVERLESS_MEMORY_GB = 6  # the largest serverless size; Chronos-2 is 119.5M par
 PRICES_FILE = "cloud_prices.csv"
 
 
-def load_prices(paths) -> pd.DataFrame:
+def load_prices(paths: Paths) -> pd.DataFrame:
+    """Read ``data/reference/cloud_prices.csv``; point at ``fetch_cloud_prices.py`` if absent."""
     path = paths.data_reference / PRICES_FILE
     if not path.is_file():
         raise SystemExit(f"{path} is missing. Run: uv run python scripts/fetch_cloud_prices.py")
@@ -89,6 +90,7 @@ def measured_throughput(bench: pd.DataFrame) -> pd.DataFrame:
 
 
 def hosting_rates(prices: pd.DataFrame) -> pd.DataFrame:
+    """Keep the hourly hosting rates and add the monthly cost at ``HOURS_PER_MONTH``."""
     rates = prices[(prices["component"] == "Hosting") & (prices["unit"] == "Hrs")].copy()
     rates["usd_per_month"] = rates["price_usd"] * HOURS_PER_MONTH
     return rates[
@@ -194,6 +196,7 @@ def serverless_costs(prices: pd.DataFrame, bench: pd.DataFrame) -> pd.DataFrame:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Join measured throughput with published rates; write the cost tables and figures."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--bench",
@@ -245,7 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         instances=FIGURE_INSTANCES,
         break_even=even,
         title=(
-            f"Cost per million day-ahead forecasts, {FIGURE_MODEL.split('/')[-1]} at "
+            f"Cost per million day-ahead forecasts, {FIGURE_MODEL.rsplit('/', maxsplit=1)[-1]} at "
             f"{FIGURE_CONTEXT:,} hours of context"
         ),
     )

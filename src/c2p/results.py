@@ -58,7 +58,7 @@ def cpu_model() -> str:
     system = platform.system()
     try:
         if system == "Linux":
-            with open("/proc/cpuinfo", encoding="utf-8") as handle:
+            with Path("/proc/cpuinfo").open(encoding="utf-8") as handle:
                 for line in handle:
                     if line.startswith("model name"):
                         return line.split(":", 1)[1].strip()

@@ -42,6 +42,7 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 import torch
+from chronos import Chronos2Pipeline
 
 from c2p.config import get_paths, set_seed
 from c2p.data import spain_energy_frame, validate_and_prepare
@@ -72,7 +73,12 @@ def tile_series(series: pd.DataFrame, *, n_series: int, context_length: int) -> 
 
 
 def time_predict(
-    pipeline, frame: pd.DataFrame, *, horizon: int, repeats: int, budget_s: float = float("inf")
+    pipeline: Chronos2Pipeline,
+    frame: pd.DataFrame,
+    *,
+    horizon: int,
+    repeats: int,
+    budget_s: float = float("inf"),
 ) -> list[float]:
     """Seconds of each of up to ``repeats`` timed calls, after one discarded warm-up.
 
@@ -207,6 +213,7 @@ def benchmark(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Parse the command line, run the sweep and write the two CSV files."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--models", nargs="+", default=[CHRONOS2, CHRONOS2_SMALL])

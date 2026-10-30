@@ -1,4 +1,4 @@
-"""Create, invoke and, above all, delete a SageMaker real-time endpoint for Chronos-2.
+r"""Create, invoke and, above all, delete a SageMaker real-time endpoint for Chronos-2.
 
 A real-time endpoint bills for every hour it exists, whether or not anything calls it. That is
 the single most expensive mistake in this series, so this script is built around teardown: it
@@ -38,6 +38,7 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import ModuleType
 
 ENDPOINT_NAME = "chronos2-forecast"
 INSTANCE_TYPE = "ml.c7i.xlarge"  # CPU: see data/reference/cloud_prices.csv for the hourly rate
@@ -48,7 +49,7 @@ TAGS = [{"Key": "project", "Value": "chronos-2-practical"}, {"Key": "managed-by"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def require_boto3():
+def require_boto3() -> ModuleType:
     """Import boto3 lazily, with an actionable message when it is not installed."""
     try:
         import boto3
@@ -87,13 +88,14 @@ def build_artifact(destination: Path, *, checkpoint: Path | None) -> Path:
     return archive
 
 
-def upload(boto3, archive: Path, *, bucket: str, prefix: str) -> str:
+def upload(boto3: ModuleType, archive: Path, *, bucket: str, prefix: str) -> str:
+    """Upload ``model.tar.gz`` to S3 and return its ``s3://`` URI."""
     key = f"{prefix.rstrip('/')}/{archive.name}"
     boto3.client("s3").upload_file(str(archive), bucket, key)
     return f"s3://{bucket}/{key}"
 
 
-def create(args, *, model_data: str) -> None:
+def create(args: argparse.Namespace, *, model_data: str) -> None:
     """Register the model, create the endpoint configuration and the endpoint, then wait."""
     boto3 = require_boto3()
     from sagemaker import image_uris
@@ -147,7 +149,7 @@ def create(args, *, model_data: str) -> None:
     print(f"InService. Delete it with: python {Path(__file__).name} --delete --yes")
 
 
-def invoke(args) -> None:
+def invoke(args: argparse.Namespace) -> None:
     """Send one small request and print the first few steps and the server-side latency."""
     boto3 = require_boto3()
     # Two weeks of a daily sine, so a correct response is visibly periodic at a glance.
@@ -184,7 +186,7 @@ def invoke(args) -> None:
     print(f"round trip {round_trip_ms:.1f} ms")
 
 
-def delete(args) -> None:
+def delete(args: argparse.Namespace) -> None:
     """Remove the endpoint, its configuration and the model, ignoring what is already gone."""
     boto3 = require_boto3()
     client = boto3.client("sagemaker")
@@ -210,7 +212,7 @@ def delete(args) -> None:
     )
 
 
-def plan(args) -> None:
+def plan(args: argparse.Namespace) -> None:
     """Print exactly what would be created, and what it would cost per hour, then stop."""
     print(
         f"PLAN (nothing is created)\n"
@@ -228,6 +230,7 @@ def plan(args) -> None:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Build the command line: mode, bucket, role, instance type and the ``--yes`` switch."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--name", default=ENDPOINT_NAME)
     parser.add_argument("--bucket", help="S3 bucket for the model artifact")
@@ -248,6 +251,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Dispatch to plan, create, invoke or delete; ``--plan`` is the default and creates nothing."""
     args = parse_args(argv)
     if args.invoke:
         invoke(args)

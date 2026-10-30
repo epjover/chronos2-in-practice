@@ -82,8 +82,8 @@ def plot_throughput(
     with style_context():
         if ax is None:
             _, ax = plt.subplots(figsize=(8.0, 4.6), layout="constrained")
-        for (model, device), group in rows.groupby(["model", "device"], sort=True):
-            group = group.sort_values("batch_size")
+        for (model, device), cells in rows.groupby(["model", "device"], sort=True):
+            group = cells.sort_values("batch_size")
             is_small = "small" in str(model)
             color = _GPU_COLOR if device == "cuda" else _CPU_COLOR
             if {"series_per_second_p05", "series_per_second_p95"} <= set(group.columns):
@@ -161,8 +161,8 @@ def plot_latency_spread(
         groups = list(rows.groupby(["model", "device"], sort=True))
         batches = sorted(rows["batch_size"].unique())
         width = 0.8 / max(len(groups), 1)
-        for offset, ((model, device), group) in enumerate(groups):
-            group = group.sort_values("batch_size")
+        for offset, ((model, device), cells) in enumerate(groups):
+            group = cells.sort_values("batch_size")
             is_small = "small" in str(model)
             color = _GPU_COLOR if device == "cuda" else _CPU_COLOR
             x = (
@@ -303,8 +303,8 @@ def plot_coverage_by_month(
             zorder=2,
             label=f"nominal {nominal:.0%}",
         )
-        for model, group in by_month.groupby("model", sort=False):
-            group = group.set_index("period").reindex(periods)
+        for model, rows in by_month.groupby("model", sort=False):
+            group = rows.set_index("period").reindex(periods)
             color, style = _MODEL_STYLES.get(str(model), (NEUTRAL_BAR, "solid"))
             ax.plot(
                 range(len(periods)),

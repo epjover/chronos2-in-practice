@@ -74,10 +74,29 @@ target-version = "py311"
 extend-include = ["*.ipynb"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "NPY", "PD", "RUF"]
+# D: every public module, class and function carries a docstring (numpy convention, as in
+# c2p.models). ANN: public signatures are typed. PTH/C4/PLW/PLC: idiomatic pathlib, comprehensions
+# and loop hygiene. ARG is left out on purpose: Forecaster implementations accept arguments they
+# ignore to satisfy the shared protocol.
+select = [
+    "E", "F", "W", "I", "B", "UP", "SIM", "NPY", "PD", "RUF",
+    "D", "ANN", "PTH", "C4", "PLW", "PLC",
+]
+ignore = [
+    "D105",   # magic methods (__repr__, __str__) need no docstring
+    "D107",   # __init__ is documented in the class docstring
+    "D401",   # noun-phrase summaries ("The CPU's marketing name ...") are fine for accessors
+    "ANN401", # Any is sometimes the right type (pipeline objects from chronos)
+    "PLC0415", # imports inside functions are deliberate: heavy optional dependencies load lazily
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.per-file-ignores]
-"*.ipynb" = ["E402"]
+"*.ipynb" = ["E402", "D", "ANN", "PLW"]
+"tests/*" = ["D", "ANN", "PLW", "PTH"]
+"conftest.py" = ["D", "ANN"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -248,7 +248,7 @@ def _check_figure_name(fig: Figure, name: str) -> None:
             f"Figure name {name!r} must be a file stem of letters, digits, '_', '-' and '.' "
             "(no spaces, ':' or folders); pass the folder separately."
         )
-    if name.split(".")[0].upper() in _RESERVED_STEMS:
+    if name.split(".", maxsplit=1)[0].upper() in _RESERVED_STEMS:
         raise ValueError(f"Figure name {name!r} is a reserved device name on Windows.")
     suffix = name.rpartition(".")[2].lower() if "." in name else ""
     if suffix in fig.canvas.get_supported_filetypes():
@@ -282,11 +282,12 @@ def format_compact(value: float, _position: int | None = None) -> str:
     for index, (threshold, suffix) in enumerate(_UNITS):
         if magnitude < threshold:
             continue
-        text = f"{value / threshold:.2f}"
-        if abs(float(text)) >= 1000 and index > 0:
-            threshold, suffix = _UNITS[index - 1]
-            text = f"{value / threshold:.2f}"
-        return text.rstrip("0").rstrip(".") + suffix
+        unit_threshold, unit_suffix = threshold, suffix
+        text = f"{value / unit_threshold:.2f}"
+        if abs(float(text)) >= 1000 and index > 0:  # 999,999 rounds up: show 1M, not 1000K
+            unit_threshold, unit_suffix = _UNITS[index - 1]
+            text = f"{value / unit_threshold:.2f}"
+        return text.rstrip("0").rstrip(".") + unit_suffix
     return "0" if value == 0 else f"{value:g}"
 
 

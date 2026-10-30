@@ -63,11 +63,13 @@ TIMEOUT_S = 600
 
 
 def fetch_json(url: str) -> dict:
+    """GET ``url`` and parse the JSON body (the offer files are tens of megabytes)."""
     with urllib.request.urlopen(url, timeout=TIMEOUT_S) as response:
         return json.load(response)
 
 
 def region_offer_url(region: str) -> str:
+    """Resolve the current offer-file URL of ``region`` from the SageMaker region index."""
     index = fetch_json(REGION_INDEX)
     regions = index["regions"]
     if region not in regions:
@@ -112,7 +114,7 @@ def extract(offer: dict, *, region: str, url: str) -> pd.DataFrame:
             {
                 "service": "SageMaker",
                 "component": "ServerlessInference" if serverless else component,
-                "instance": instance or usage_type.split(":")[-1],
+                "instance": instance or usage_type.rsplit(":", maxsplit=1)[-1],
                 "vcpu": attributes.get("vCpu", ""),
                 "gpu": attributes.get("gpu", ""),
                 "memory": attributes.get("memory", ""),
@@ -134,6 +136,7 @@ def extract(offer: dict, *, region: str, url: str) -> pd.DataFrame:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Download the SageMaker offer file for one region and write the price reference CSV."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--out", default="cloud_prices.csv", help="file under data/reference/")

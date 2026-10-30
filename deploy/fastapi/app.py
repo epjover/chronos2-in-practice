@@ -320,8 +320,11 @@ def _check_grid_sizes(series: Sequence[SeriesInput], offset: BaseOffset) -> None
 
 
 def _grid_size(timestamps: Sequence[datetime], offset: BaseOffset) -> int:
-    """Approximate number of grid steps from the first to the last timestamp (exact for fixed
-    frequencies such as ``h``; based on the first step for calendar ones such as ``MS``)."""
+    """Approximate number of grid steps from the first to the last timestamp.
+
+    Exact for fixed frequencies such as ``h``; based on the first step for calendar ones such
+    as ``MS``.
+    """
     first, last = pd.Timestamp(min(timestamps)), pd.Timestamp(max(timestamps))
     step = (first + offset) - first
     if step <= timedelta(0):
@@ -405,6 +408,7 @@ def input_hash(
 
 
 def summarize_input(context: pd.DataFrame, report: DataReport) -> InputSummary:
+    """Describe the validated input (series, rows, span, gaps) for the response envelope."""
     return InputSummary(
         n_series=report.n_series,
         n_points=len(context),

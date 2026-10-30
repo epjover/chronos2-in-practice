@@ -77,6 +77,7 @@ def describe(table: pd.DataFrame) -> pd.DataFrame:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Join the runs, write ``bench_stability.csv`` and draw the spread figure."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--devices", nargs="+", default=["cuda", "cpu"])
     parser.add_argument("--prefix", default="bench_latency")

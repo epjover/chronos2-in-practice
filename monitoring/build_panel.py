@@ -164,6 +164,7 @@ def panel(rolling: pd.DataFrame, *, threshold: float) -> plt.Figure:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Replay 2018 as production, write the log, rolling metrics, drift and the panel figure."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fast", action="store_true", help="12 cutoffs instead of 365")
     parser.add_argument("--threshold", type=float, default=WAPE_THRESHOLD)

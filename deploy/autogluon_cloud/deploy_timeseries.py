@@ -1,4 +1,4 @@
-"""Serve Chronos-2 through AutoGluon Cloud: batch, real-time, or serverless with scale to zero.
+r"""Serve Chronos-2 through AutoGluon Cloud: batch, real-time, or serverless with scale to zero.
 
 This is the path AWS recommends, and the only one of the three in this repository that can bill
 you nothing while idle. ``TimeSeriesFoundationModel`` wraps a pretrained checkpoint (no
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from typing import Any
 
 import pandas as pd
 
@@ -54,7 +55,8 @@ SERVERLESS_MEMORY_MB = 6144
 SERVERLESS_CONCURRENCY = 5
 
 
-def require_cloud():
+def require_cloud() -> type:
+    """Import ``TimeSeriesFoundationModel`` lazily, with an actionable message when absent."""
     try:
         from autogluon.cloud import TimeSeriesFoundationModel
     except ModuleNotFoundError as error:  # pragma: no cover - depends on the local environment
@@ -72,7 +74,8 @@ def history(*, hours: int = CONTEXT_HOURS) -> pd.DataFrame:
     return series.tail(hours).rename(columns={LOAD: "target"}).reset_index(drop=True)
 
 
-def build_model(args):
+def build_model(args: argparse.Namespace) -> Any:
+    """Instantiate the foundation model wrapper from the parsed arguments."""
     cls = require_cloud()
     return cls(
         MODEL_ID,
@@ -82,7 +85,7 @@ def build_model(args):
     )
 
 
-def run_batch(args) -> None:
+def run_batch(args: argparse.Namespace) -> None:
     """One job: forecast and write to S3, then exit. Nothing is left running."""
     model = build_model(args)
     data = history()
@@ -101,7 +104,7 @@ def run_batch(args) -> None:
     print("\nThe job has finished. Nothing is still billing except the S3 objects it wrote.")
 
 
-def run_endpoint(args) -> None:
+def run_endpoint(args: argparse.Namespace) -> None:
     """Deploy a real-time or serverless endpoint, send one request, and say how to delete it."""
     model = build_model(args)
     serverless = args.mode == "serverless"
@@ -143,7 +146,7 @@ def run_endpoint(args) -> None:
     print(f"Delete it with: --delete --endpoint {endpoint.endpoint_name} --yes")
 
 
-def delete(args) -> None:
+def delete(args: argparse.Namespace) -> None:
     """Delete an endpoint by name. S3 artifacts are left alone."""
     if not args.endpoint:
         raise SystemExit("--delete needs --endpoint <name>.")
@@ -154,7 +157,8 @@ def delete(args) -> None:
     print(f"Still in S3: {args.s3_path or '<s3 path>'}; remove it with `aws s3 rm --recursive`.")
 
 
-def plan(args) -> None:
+def plan(args: argparse.Namespace) -> None:
+    """Print what the chosen mode would create and what would keep billing; create nothing."""
     leaves_running = {
         "batch": "nothing (the job exits)",
         "realtime": f"an endpoint on {args.realtime_instance}, billed per hour",
@@ -178,6 +182,7 @@ def plan(args) -> None:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Build the command line: mode, instance type, S3 path and the ``--yes`` safety switch."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--mode", choices=("batch", "realtime", "serverless"), default="batch")
     parser.add_argument("--s3-path", help="s3://bucket/prefix for artifacts and outputs")
@@ -195,6 +200,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Dispatch to plan, batch, endpoint or delete; ``--plan`` (the default) creates nothing."""
     args = parse_args(argv)
     get_paths()  # fail early if the repository layout is wrong
     if args.delete:

@@ -336,8 +336,8 @@ def _draw_coverage(
         y += 0.8
     ax.set_yticks(ticks, labels=labels)
     ax.set_ylim(y - 1.3, -0.7)
-    low = min(float(coverage["achieved"].min()), min(levels))
-    high = max(float(coverage["achieved"].max()), max(levels))
+    low = min(float(coverage["achieved"].min()), *levels)
+    high = max(float(coverage["achieved"].max()), *levels)
     pad = max(0.02 * (high - low), 0.005)
     ax.set_xlim(low - pad, high + pad)
     return [handles[model] for model in models if model in handles]

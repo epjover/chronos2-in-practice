@@ -41,6 +41,7 @@ from c2p.schema import (
     TARGET_COL,
     TARGET_NAME_COL,
     TIMESTAMP_COL,
+    Forecaster,
     quantile_col,
 )
 
@@ -63,7 +64,7 @@ Mode = Literal["additive", "scaled"]
 
 def symmetric_pairs(quantile_levels: Sequence[float]) -> list[tuple[float, float]]:
     """``(lower, upper)`` pairs with ``lower + upper == 1``, widest first; the median is skipped."""
-    levels = sorted(set(float(level) for level in quantile_levels))
+    levels = sorted({float(level) for level in quantile_levels})
     pairs = []
     for lower in levels:
         upper = round(1.0 - lower, 10)
@@ -94,6 +95,7 @@ class QuantileCalibration:
     n_calibration_rows: int
 
     def delta(self, lower: float, upper: float) -> pd.Series:
+        """Per-horizon-step adjustment for the ``(lower, upper)`` pair, indexed by step."""
         rows = self.table[(self.table["lower"] == lower) & (self.table["upper"] == upper)]
         if rows.empty:
             raise KeyError(f"No calibration for the ({lower}, {upper}) pair.")
@@ -187,12 +189,14 @@ def conformalize(
 class ConformalForecaster:
     """Any ``Forecaster`` plus a :class:`QuantileCalibration`, as one ``Forecaster``."""
 
-    def __init__(self, base, calibration: QuantileCalibration, *, name: str | None = None):
+    def __init__(
+        self, base: Forecaster, calibration: QuantileCalibration, *, name: str | None = None
+    ) -> None:
         self.base = base
         self.calibration = calibration
         self.name = name or f"{base.name}+conformal_{calibration.mode}"
 
-    def predict(
+    def predict(  # noqa: D102 - the ``Forecaster`` protocol documents this method
         self,
         context: pd.DataFrame,
         *,

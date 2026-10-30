@@ -46,6 +46,7 @@ CALIBRATION_WINDOWS = 184  # daily cutoffs from 2017-06-30 22:00 to 2017-12-30 2
 
 
 def main() -> int:
+    """Calibrate on 2017-H2, re-score 2018 with both variants and write the comparison."""
     set_seed()
     set_style()
     fast = is_fast_mode(default=False)

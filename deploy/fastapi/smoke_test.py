@@ -57,6 +57,7 @@ def synthetic_series(item_id: str, *, hours: int = 168, seed: int = 0) -> dict[s
 
 
 def forecast_payload(n_series: int, *, prediction_length: int) -> dict[str, Any]:
+    """Build a request body with ``n_series`` copies of one week of synthetic hourly load."""
     return {
         "series": [synthetic_series(f"series-{i:04d}", seed=i) for i in range(n_series)],
         "prediction_length": prediction_length,
@@ -117,6 +118,7 @@ def _increasing(quantiles: Sequence[Sequence[float]]) -> bool:
 
 
 def print_forecast(body: dict[str, Any], client_ms: float, *, steps: int = 6) -> None:
+    """Print the first ``steps`` quantile rows of the first series and the timing envelope."""
     entry = body["forecasts"][0]
     print(f"model {body['model_id']}  input_hash {body['input_hash'][:16]}...")
     print(f"input summary: {body['input_summary']}")
@@ -191,6 +193,7 @@ def write_csv(rows: Sequence[dict[str, object]], path: Path) -> None:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Build the command line: service URL, wait time, batch ladder and optional CSV output."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--url", default="http://localhost:8000", help="service base URL")
     parser.add_argument(
@@ -209,6 +212,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Wait for the service, send the smoke requests and optionally time the batch ladder."""
     args = parse_args(argv)
     with httpx.Client(base_url=args.url, timeout=args.timeout) as client:
         try:

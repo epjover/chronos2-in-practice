@@ -747,7 +747,7 @@ def _drop_checked_reported_actual(joined: pd.DataFrame, where: str) -> pd.DataFr
 def _fev_arrays(
     joined: pd.DataFrame, context: pd.DataFrame, config: BacktestConfig
 ) -> dict[str, np.ndarray]:
-    """fev inputs: ``y_true``/``y_pred`` [N, H, 1], ``q_pred`` [N, H, 1, Q], ragged ``y_past``.
+    """Fev inputs: ``y_true``/``y_pred`` [N, H, 1], ``q_pred`` [N, H, 1, Q], ragged ``y_past``.
 
     ``joined`` is sorted by item, target and timestamp and complete, so a reshape gives one
     row per (item, target) pair; ``y_past`` holds the same pairs' context values. ``q_pred``

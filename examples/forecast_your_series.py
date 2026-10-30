@@ -1,4 +1,4 @@
-"""Forecast your own CSV with Chronos-2: checklist, zero-shot quantiles, fan chart, backtest.
+r"""Forecast your own CSV with Chronos-2: checklist, zero-shot quantiles, fan chart, backtest.
 
 The notebooks all start from the Spanish electricity dataset. This script is the same pipeline
 pointed at a file of yours, so the first forecast on your data is one command rather than a
@@ -116,6 +116,7 @@ def split_future(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run checklist, zero-shot forecast, fan chart and optional backtest on the given CSV."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("csv", type=Path)
     parser.add_argument("--target", required=True, help="column to forecast")

@@ -35,6 +35,7 @@ CONTEXT = 2048
 
 
 def main() -> int:
+    """Run both checkpoints through the day-ahead protocol and write the comparison."""
     set_seed()
     fast = is_fast_mode(default=False)
     paths = get_paths(fast_mode=fast)

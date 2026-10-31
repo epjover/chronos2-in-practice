@@ -39,7 +39,7 @@ import pandas as pd
 
 from c2p.baselines import SeasonalNaive
 from c2p.config import get_device
-from c2p.data import validate_and_prepare
+from c2p.data import check_future_frame, validate_and_prepare
 from c2p.eval import BacktestConfig, backtest, evaluate, skill_table
 from c2p.models import CHRONOS2, Chronos2Forecaster, load_chronos2
 from c2p.plotting import plot_fan, save_figure, set_style
@@ -188,6 +188,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "the covariates will be used as past-only. Append the horizon rows to use their "
             "future.",
             file=sys.stderr,
+        )
+
+    if future is not None:  # the same checks predict_df would fail on, with a readable message
+        check_future_frame(
+            history, future, prediction_length=args.horizon, freq=args.freq, target=args.target
         )
 
     device = get_device()

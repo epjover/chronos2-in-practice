@@ -16,6 +16,7 @@ import pytest
 import torch
 from chronos import Chronos2Model, Chronos2Pipeline
 from chronos.chronos2 import Chronos2CoreConfig
+from conftest import CHRONOS2_QUANTILES
 from safetensors.torch import load_file
 
 from c2p.finetune import (
@@ -33,7 +34,7 @@ from c2p.finetune import (
     window_series,
 )
 from c2p.models import CHRONOS2, Chronos2Forecaster, load_chronos2
-from c2p.schema import CHRONOS2_QUANTILES, ID_COL, TARGET_COL, TIMESTAMP_COL
+from c2p.schema import ID_COL, TARGET_COL, TIMESTAMP_COL
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:The model is being fine-tuned on the CPU:UserWarning"

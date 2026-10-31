@@ -18,12 +18,11 @@ WEEKLY_SEASON = 168
 
 LOAD = "load_actual"
 PRICE = "price_actual"
-# The grid operator's (TSO) day-ahead forecasts, published the day before: industrial
-# baselines for LOAD and PRICE, and known-future covariates for horizons up to 24 hours.
+# The grid operator's (TSO) day-ahead forecasts, published the day before: known-future
+# covariates for horizons up to 24 hours (article 3).
 TSO_LOAD_FORECAST = "load_forecast_tso"
-TSO_PRICE_FORECAST = "price_day_ahead_tso"
 TSO_COVARIATES: tuple[str, ...] = (
-    "load_forecast_tso",
+    TSO_LOAD_FORECAST,
     "solar_forecast_tso",
     "wind_onshore_forecast_tso",
 )

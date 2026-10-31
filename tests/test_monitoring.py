@@ -7,8 +7,6 @@ case where some never arrive.
 
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -28,7 +26,6 @@ from c2p.monitoring import (
     read_log,
     retraining_alerts,
     rolling_metrics,
-    to_json_line,
 )
 from c2p.schema import ID_COL, PREDICTION_COL, TARGET_NAME_COL, TIMESTAMP_COL, quantile_col
 
@@ -306,11 +303,3 @@ def test_log_summary_mentions_resolution_only_once_actuals_are_joined():
     assert f"{len(log)} logged forecasts" in summary
     assert "resolved" in summary
     assert VERSION in summary
-
-
-def test_to_json_line_is_valid_json_with_isoformat_timestamps():
-    row = make_log(1).iloc[0].to_dict()
-    payload = json.loads(to_json_line(row))
-    assert payload[MODEL_VERSION_COL] == VERSION
-    assert pd.Timestamp(payload[CUTOFF_COL]) == row[CUTOFF_COL]
-    assert sorted(payload) == list(payload)

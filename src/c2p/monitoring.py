@@ -22,7 +22,6 @@ shift in the input distribution can be seen before the actuals land.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -47,7 +46,6 @@ __all__ = [
     "read_log",
     "retraining_alerts",
     "rolling_metrics",
-    "to_json_line",
 ]
 
 logger = logging.getLogger(__name__)
@@ -295,16 +293,4 @@ def log_summary(log: pd.DataFrame) -> str:
     return (
         f"{len(log):,} logged forecasts{resolved}; versions {versions}; "
         f"{hashes:,} distinct inputs; cutoffs {log[CUTOFF_COL].min()} to {log[CUTOFF_COL].max()}"
-    )
-
-
-def to_json_line(row: Mapping[str, object]) -> str:
-    """Serialise one log row as JSON, for shipping to a log collector instead of a CSV."""
-    return json.dumps(
-        {
-            key: (value.isoformat() if isinstance(value, pd.Timestamp) else value)
-            for key, value in row.items()
-        },
-        default=str,
-        sort_keys=True,
     )

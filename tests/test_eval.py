@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import scipy.stats
+from conftest import CHRONOS2_QUANTILES
 
 from c2p.eval import (
     ACTUAL_COL,
@@ -32,7 +33,6 @@ from c2p.eval import (
     summarize,
 )
 from c2p.schema import (
-    CHRONOS2_QUANTILES,
     EVAL_QUANTILES,
     ID_COL,
     PREDICTION_COL,

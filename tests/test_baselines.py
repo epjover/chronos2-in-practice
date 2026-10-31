@@ -14,6 +14,7 @@ from unittest.mock import create_autospec
 import numpy as np
 import pandas as pd
 import pytest
+from conftest import CHRONOS2_QUANTILES
 from pandas.tseries.frequencies import to_offset
 from scipy.stats import norm
 
@@ -35,7 +36,6 @@ from c2p.models import (
     validate_forecast_inputs,
 )
 from c2p.schema import (
-    CHRONOS2_QUANTILES,
     EVAL_QUANTILES,
     ID_COL,
     PREDICTION_COL,

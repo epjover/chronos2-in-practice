@@ -1,6 +1,6 @@
 # Chronos-2 in Practice
 
-[![CI](https://github.com/YOUR_GITHUB_USER/chronos2-in-practice/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_GITHUB_USER/chronos2-in-practice/actions/workflows/ci.yml)
+[![CI](https://github.com/epjover/chronos2-in-practice/actions/workflows/ci.yml/badge.svg)](https://github.com/epjover/chronos2-in-practice/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11-3.13](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](pyproject.toml)
 
@@ -32,7 +32,7 @@ or Colab).
    Jupyter:
 
    ```bash
-   git clone https://github.com/YOUR_GITHUB_USER/chronos2-in-practice.git chronos2-in-practice
+   git clone https://github.com/epjover/chronos2-in-practice.git chronos2-in-practice
    cd chronos2-in-practice
    uv sync
    uv run jupyter lab
@@ -95,21 +95,21 @@ export breaks a plain `pip install -r` on Linux and Colab.
 
 | Notebook | |
 | --- | --- |
-| `00_data_checks` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/00_data_checks.ipynb) |
-| `01_quickstart` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/01_quickstart.ipynb) |
-| `02_evaluation` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/02_evaluation.ipynb) |
-| `03_context_length` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/03_context_length.ipynb) |
-| `04_multivariate_coldstart` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/04_multivariate_coldstart.ipynb) |
-| `05_covariates` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/05_covariates.ipynb) |
-| `06_explainability` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/06_explainability.ipynb) |
-| `07_finetune_lora` (GPU) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/07_finetune_lora.ipynb) |
-| `08_finetune_full` (GPU) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/YOUR_GITHUB_USER/chronos2-in-practice/blob/main/notebooks/08_finetune_full.ipynb) |
+| `00_data_checks` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/00_data_checks.ipynb) |
+| `01_quickstart` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/01_quickstart.ipynb) |
+| `02_evaluation` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/02_evaluation.ipynb) |
+| `03_context_length` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/03_context_length.ipynb) |
+| `04_multivariate_coldstart` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/04_multivariate_coldstart.ipynb) |
+| `05_covariates` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/05_covariates.ipynb) |
+| `06_explainability` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/06_explainability.ipynb) |
+| `07_finetune_lora` (GPU) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/07_finetune_lora.ipynb) |
+| `08_finetune_full` (GPU) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/08_finetune_full.ipynb) |
 
 The notebooks import helpers from this repository, so on Colab run this first (it keeps Colab's
 own PyTorch build):
 
 ```python
-!git clone --depth 1 https://github.com/YOUR_GITHUB_USER/chronos2-in-practice.git chronos2-in-practice
+!git clone --depth 1 https://github.com/epjover/chronos2-in-practice.git chronos2-in-practice
 %cd chronos2-in-practice
 !pip install -q .
 ```

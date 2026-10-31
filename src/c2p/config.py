@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 SEED = 42
-GITHUB_REPO = "YOUR_GITHUB_USER/chronos2-in-practice"
+GITHUB_REPO = "epjover/chronos2-in-practice"
 PROJECT_NAME = "chronos2-in-practice"
 
 _TRUE = {"1", "true", "yes", "on"}

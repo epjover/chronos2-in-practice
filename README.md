@@ -25,6 +25,17 @@ deployment and monitoring. Every experiment in the articles can be rerun from th
 Everything runs on a CPU except the fine-tuning notebooks `07` and `08`, which need a GPU (local
 or Colab).
 
+## Articles
+
+The drafts live in [`articles/`](articles/) as Markdown, one file per part, with every number
+read from `results/`. Medium's editor has no table block, so
+[`articles/medium/`](articles/medium/) holds a copy of each article with its tables rendered as
+images (`articles/medium/tables/`), ready to paste; regenerate it after editing a draft:
+
+```bash
+uv run python scripts/render_article_tables.py
+```
+
 ## Quickstart (uv)
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
@@ -151,9 +162,11 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 ├── monitoring/
 │   ├── build_panel.py      # replays 2018 as production and builds the alert panel
 │   └── calibrate_intervals.py  # calibrates the bands on 2017-H2, re-scores 2018
+├── articles/               # the five drafts; medium/ holds the table-as-image copies
 ├── results/                # one CSV per experiment + figures/
 ├── scripts/
 │   ├── set_repo_url.py     # sets the GitHub owner/name used in links
+│   ├── render_article_tables.py  # article tables -> PNG + Medium-ready copies
 │   ├── fetch_cloud_prices.py  # AWS Price List API -> data/reference/cloud_prices.csv
 │   └── cost_table.py       # joins measured throughput with published rates
 ├── tests/                  # pytest suite

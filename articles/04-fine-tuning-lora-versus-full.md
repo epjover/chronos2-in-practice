@@ -48,7 +48,7 @@ with three periods in time order:
 | Period | Span (UTC) | Size | Used for |
 | --- | --- | ---: | --- |
 | train | 2014-12-31 23:00 → 2017-06-30 21:00 | 569,062 rows | gradient updates |
-| validation | 2017-06-30 22:00 → 2017-12-31 23:00 | 702 windows | early stopping only |
+| validation | 2017-06-30 22:00 → 2017-12-31 23:00 | 702 windows (27 weekly cutoffs × 26 series) | early stopping only |
 | test | 2018-01-01 00:00 → 2018-12-31 22:00 | 365 windows | the backtest, never seen |
 
 One detail matters more than it first appears. The validation set doesn't get handed over as one

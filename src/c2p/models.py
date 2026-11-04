@@ -17,6 +17,7 @@ The pipeline is loaded once and wrapped; the wrapper only translates between our
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 CHRONOS2 = "amazon/chronos-2"
 CHRONOS2_SMALL = "autogluon/chronos-2-small"
+# Cross-learning batch size suggested by the ``predict_df`` docstring ("around 100, as used in
+# the Chronos-2 technical report"); larger batches "deviate from the maximum group size used
+# during pretraining" and make the forecast depend on how the frame is cut into batches.
+CROSS_LEARNING_BATCH_HINT = 100
 CHRONOS2_SYNTH = "autogluon/chronos-2-synth"
 CHRONOS_BOLT_BASE = "amazon/chronos-bolt-base"
 
@@ -450,6 +455,16 @@ class Chronos2Forecaster:
             freq=freq,
         )
         warn_untrained_levels(levels, self.pipeline.quantiles, model_name=self.name)
+        n_series = int(context[ID_COL].nunique())
+        if self.cross_learning and n_series > CROSS_LEARNING_BATCH_HINT:
+            warnings.warn(
+                f"cross_learning=True over {n_series} series with batch_size={self.batch_size}: "
+                "every series in a batch joins one group, so the forecast depends on how the "
+                "frame is cut into batches. The library suggests about "
+                f"{CROSS_LEARNING_BATCH_HINT} series per batch (the size used in the technical "
+                "report); prefer that and frames of related series.",
+                stacklevel=2,
+            )
         raw = self.pipeline.predict_df(
             context,
             future_df=future_covariates,

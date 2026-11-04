@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from collections.abc import Sequence
 from unittest.mock import create_autospec
 
@@ -556,6 +557,17 @@ def test_auto_ets_validates_parameters(kwargs, match):
 # --------------------------------------------------------------------------------------------
 # Chronos wrappers with stub pipelines (no network)
 # --------------------------------------------------------------------------------------------
+
+
+def test_chronos2_forecaster_warns_on_cross_learning_over_many_series(chronos2_stub):
+    kwargs = {"prediction_length": 6, "quantile_levels": EVAL_QUANTILES, "freq": FREQ}
+    many = make_context(n_days=3, items=[f"s{i:03d}" for i in range(101)], nan_positions=())
+    with pytest.warns(UserWarning, match="depends on how the frame is cut"):
+        Chronos2Forecaster(chronos2_stub, cross_learning=True).predict(many, **kwargs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        Chronos2Forecaster(chronos2_stub, cross_learning=False).predict(many, **kwargs)
+        Chronos2Forecaster(chronos2_stub, cross_learning=True).predict(make_context(), **kwargs)
 
 
 def test_chronos2_forecaster_passes_future_df_only_with_covariates(chronos2_stub):

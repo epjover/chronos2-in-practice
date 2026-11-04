@@ -327,10 +327,11 @@ grouped = Chronos2Forecaster(pipeline, cross_learning=True).predict(
 The control above is the second line with `cross_learning=False`: same frame, separate groups.
 
 One practical detail that the library documents and that is easy to miss: with `cross_learning=True`
-the forecast depends on the batch, because every series in the batch joins the group. Chronos-2 was
-pretrained with groups of up to about 100 series, so `predict_df`'s default `batch_size=256` is too
-large for this mode and the authors suggest a batch of around 100; here the frame has five series,
-so the whole frame is one group. If you cross-learn across thousands of meters, split them into
+the forecast depends on the batch, because every series in the batch joins the group. The
+docstring of `predict_df` warns that very large batches "deviate from the maximum group size used
+during pretraining" and suggests "a batch size around 100 (as used in the Chronos-2 technical
+report)", so the default `batch_size=256` is not the right setting for this mode; here the frame
+has five series, so the whole frame is one group. If you cross-learn across thousands of meters, split them into
 batches of related series (same region, same product line) rather than letting the batch boundary
 decide who informs whom.
 

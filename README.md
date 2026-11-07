@@ -147,6 +147,7 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── conformal.py        # conformalized quantile regression: honest intervals after the fact
 │   ├── plotting.py         # article figures
 │   ├── plots/              # figures specific to one article (architecture, evaluation)
+│   │   └── fonts/          # Excalifont (OFL 1.1), for the hand-drawn architecture diagram
 │   └── results.py          # saving and loading experiment CSV files
 ├── notebooks/              # 00_data_checks ... 08_finetune_full
 ├── examples/
@@ -193,6 +194,9 @@ The one figure that shows no measurement is the architecture diagram of article 
 (`c2p.plots.architecture`): it describes the model. Even there the sizes it prints are read from
 the loaded checkpoint with `chronos2_sizes(pipeline)`, so the drawing cannot disagree with the
 weights, and a slow test asserts that `amazon/chronos-2` still matches the published defaults.
+It is drawn as an Excalidraw-style sketch (wobbly outlines from Matplotlib's sketch filter, text
+in Excalifont, shipped in `src/c2p/plots/fonts/` under the SIL Open Font License), with the
+column of stages centred in the canvas.
 
 ## Fast mode
 

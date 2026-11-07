@@ -14,6 +14,8 @@ from matplotlib.figure import Figure
 
 from c2p.plots.architecture import (
     DEFAULT_TITLE,
+    FIGURE_WIDTH,
+    FONT_PATH,
     Chronos2Sizes,
     chronos2_sizes,
     plot_architecture,
@@ -66,6 +68,29 @@ def test_sizes_are_arguments_not_hard_coded_text() -> None:
         for stale in ("8,192", "1,024", "21 quantile", "768", "12 blocks"):
             assert stale not in text, stale
         assert DEFAULT_TITLE not in text
+    finally:
+        plt.close(fig)
+
+
+def test_hand_drawn_style_uses_the_shipped_font_and_is_centred() -> None:
+    """Excalifont ships with the package, every text uses it, and the column is centred."""
+    assert FONT_PATH.is_file(), FONT_PATH
+    assert (FONT_PATH.parent / "OFL.txt").is_file()
+    fig = plot_architecture()
+    try:
+        (ax,) = fig.axes
+        assert ax.texts, "no text drawn"
+        for text in ax.texts:
+            assert text.get_fontproperties().get_file() == str(FONT_PATH)
+        title = next(text for text in ax.texts if text.get_text() == DEFAULT_TITLE)
+        assert title.get_position()[0] == pytest.approx(FIGURE_WIDTH / 2)
+        assert title.get_ha() == "center"
+        boxes = [patch for patch in ax.patches if patch.get_sketch_params() is not None]
+        assert boxes, "no hand-drawn outlines"
+        widest = max(boxes, key=lambda patch: patch.get_window_extent().width)
+        left, right = widest.get_window_extent().x0, widest.get_window_extent().x1
+        canvas = ax.get_window_extent()
+        assert left - canvas.x0 == pytest.approx(canvas.x1 - right, abs=2.0)
     finally:
         plt.close(fig)
 

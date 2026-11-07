@@ -12,49 +12,89 @@ the loaded pipeline and the drawing cannot quietly disagree with the checkpoint:
     fig = plot_architecture(sizes=chronos2_sizes(pipeline))
 
 The defaults describe ``amazon/chronos-2`` as published, for use without a loaded model.
+
+The drawing imitates an Excalidraw sketch: every outline is a wobbly hand-drawn stroke
+(Matplotlib's sketch path filter, which is deterministic) and all text is set in Excalifont,
+the font of Excalidraw, shipped with the package under the SIL Open Font License (see
+``c2p/plots/fonts/README.md``). The column of stages is centred in the canvas.
 """
 
 from __future__ import annotations
 
-import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
+from importlib import resources
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
+from matplotlib import patheffects
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
+from matplotlib.font_manager import FontProperties
+from matplotlib.patches import Ellipse, FancyArrowPatch, FancyBboxPatch, Patch
+from matplotlib.textpath import TextPath
 
-from c2p.plotting import AXIS_COLOR, BLUE, INK_PRIMARY, INK_SECONDARY, SURFACE, style_context
+from c2p.plotting import style_context
 
 if TYPE_CHECKING:
     from chronos import Chronos2Pipeline
 
-__all__ = ["Chronos2Sizes", "Stage", "chronos2_sizes", "plot_architecture"]
+__all__ = [
+    "FONT_PATH",
+    "Chronos2Sizes",
+    "Stage",
+    "chronos2_sizes",
+    "hand_font",
+    "plot_architecture",
+]
+
+# --- Hand-drawn look ---------------------------------------------------------------------
+
+FONT_PATH: Path = Path(str(resources.files("c2p.plots").joinpath("fonts/Excalifont-Regular.ttf")))
+
+# Excalidraw's own palette: near-black ink, the light blue and yellow of its colour picker.
+INK = "#1e1e1e"
+INK_SOFT = "#4a4d52"  # detail sentences, a step lighter than the ink so titles stand out
+STROKE_BLUE = "#1971c2"
+FILL_BLUE = "#a5d8ff"
+FILL_YELLOW = "#ffec99"
+FILL_PAPER = "#ffffff"
+
+# Matplotlib sketch filter: wobble amplitude in points, wavelength in points, randomness.
+_SKETCH = (0.9, 120.0, 5.0)
+_STROKE_WIDTH = 1.5
 
 # --- Geometry (inches; the axes maps one data unit to one inch) ----------------------------
 
 FIGURE_WIDTH = 8.0
-_MARGIN = 0.1
-_PAD_X = 0.22
-_PAD_Y = 0.13
-_TITLE_HEIGHT = 0.27
-_LINE_HEIGHT = 0.19
-_SUB_GAP = 0.07
-_ARROW_GAP = 0.2
-_NUMBER_WIDTH = 0.34  # left strip holding the step number
+COLUMN_WIDTH = 6.6  # the stage boxes, centred in the figure
+_MARGIN = 0.18
+_PAD_X = 0.24
+_PAD_Y = 0.16
+_TITLE_HEIGHT = 0.3
+_LINE_HEIGHT = 0.21
+_SUB_GAP = 0.09
+_ARROW_GAP = 0.34
+_NUMBER_WIDTH = 0.44  # left strip holding the numbered circle
+_NUMBER_RADIUS = 0.14
+_FIGURE_TITLE_SPACE = 0.55
 
-TITLE_SIZE = 10.5
-DETAIL_SIZE = 9.3
-BADGE_SIZE = 8.2
+FIGURE_TITLE_SIZE = 14.0
+TITLE_SIZE = 12.0
+DETAIL_SIZE = 10.2
+BADGE_SIZE = 9.2
 
-_HIGHLIGHT_FILL = "#eef4fd"  # lightest step of the blue ramp, for the new encoder block
-_STAGE_FILL = "#f6f5f1"  # neutral surface, a shade off white
-_SUB_FILL = SURFACE
-# Characters per inch at a given point size, measured on the style's sans-serif faces; used
-# only to wrap text, so a small error costs a line break, never a wrong number.
-_CHARS_PER_POINT_INCH = 72 / 0.52
+
+def hand_font(size: float) -> FontProperties:
+    """Excalifont at ``size`` points, loaded from the file shipped with the package."""
+    return FontProperties(fname=str(FONT_PATH), size=size)
+
+
+def _bold() -> list[patheffects.AbstractPathEffect]:
+    """Excalifont has one weight; a thin stroke around the glyphs stands in for bold."""
+    return [patheffects.withStroke(linewidth=0.75, foreground=INK)]
 
 
 @dataclass(frozen=True)
@@ -164,16 +204,91 @@ def _stages(sizes: Chronos2Sizes) -> list[Stage]:
     ]
 
 
-# --- Drawing -------------------------------------------------------------------------------
+# --- Text measurement and wrapping ---------------------------------------------------------
+
+
+@lru_cache(maxsize=4096)
+def _glyph_run_width(text: str, fontsize: float) -> float:
+    """Width in inches of one word (or one character) set in Excalifont at ``fontsize``."""
+    if not text:
+        return 0.0
+    path = TextPath((0, 0), text, size=fontsize, prop=hand_font(fontsize))
+    return float(path.get_extents().width) / 72.0
+
+
+def _text_width(text: str, fontsize: float) -> float:
+    """Width in inches of ``text``: its words measured on the font, plus the spaces between.
+
+    Summing per-word widths ignores kerning across a space, an error far below one glyph, and
+    keeps the measurement cache small enough that wrapping costs a few dozen font lookups.
+    """
+    words = text.split(" ")
+    space = _glyph_run_width("n n", fontsize) - 2 * _glyph_run_width("n", fontsize)
+    return sum(_glyph_run_width(word, fontsize) for word in words) + space * (len(words) - 1)
 
 
 def _wrap(text: str, *, fontsize: float, width: float) -> list[str]:
-    """Split ``text`` into lines that fit ``width`` inches at ``fontsize`` points."""
-    return textwrap.wrap(text, width=max(8, int(width * _CHARS_PER_POINT_INCH / fontsize)))
+    """Greedy word wrap of ``text`` into lines no wider than ``width`` inches.
+
+    Widths are measured on the actual font, so the wrapping follows the glyphs rather than a
+    characters-per-inch estimate. A single word wider than ``width`` gets its own line.
+    """
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}" if current else word
+        if current and _text_width(candidate, fontsize) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
 
 
-def _sub_lines(label: str, detail: str, width: float) -> list[str]:
-    return _wrap(f"{label} - {detail}", fontsize=DETAIL_SIZE, width=width)
+# --- Drawing -------------------------------------------------------------------------------
+
+
+def _column_left() -> float:
+    return (FIGURE_WIDTH - COLUMN_WIDTH) / 2
+
+
+def _sketchy(patch: Patch) -> Patch:
+    """Give a patch the wobbly outline of a hand-drawn shape."""
+    patch.set_sketch_params(*_SKETCH)
+    return patch
+
+
+def _box(
+    ax: Axes,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    fill: str,
+    stroke: str = INK,
+    rounding: float = 0.1,
+) -> None:
+    ax.add_patch(
+        _sketchy(
+            FancyBboxPatch(
+                (x, y),
+                width,
+                height,
+                boxstyle=f"round,pad=0,rounding_size={rounding}",
+                facecolor=fill,
+                edgecolor=stroke,
+                linewidth=_STROKE_WIDTH,
+                zorder=1,
+            )
+        )
+    )
+
+
+def _sub_text(label: str, detail: str) -> str:
+    return f"{label}  {detail}"
 
 
 def _stage_height(stage: Stage, *, text_width: float) -> float:
@@ -181,70 +296,77 @@ def _stage_height(stage: Stage, *, text_width: float) -> float:
     lines = len(_wrap(stage.detail, fontsize=DETAIL_SIZE, width=text_width))
     height = 2 * _PAD_Y + _TITLE_HEIGHT + lines * _LINE_HEIGHT
     for label, detail in stage.sub:
-        sub_lines = _sub_lines(label, detail, text_width - 2 * _PAD_X)
+        sub_lines = _wrap(
+            _sub_text(label, detail), fontsize=DETAIL_SIZE, width=text_width - 2 * _PAD_X
+        )
         height += _SUB_GAP + 2 * _PAD_Y + len(sub_lines) * _LINE_HEIGHT
     return height
-
-
-def _box(ax: Axes, x: float, y: float, width: float, height: float, color: str) -> None:
-    ax.add_patch(
-        FancyBboxPatch(
-            (x, y),
-            width,
-            height,
-            boxstyle="round,pad=0,rounding_size=0.06",
-            facecolor=color,
-            edgecolor="none",
-            zorder=1,
-        )
-    )
 
 
 def _draw_stage(ax: Axes, stage: Stage, number: int, top: float, *, text_width: float) -> None:
     """Draw one stage with its top edge at ``top`` (inches from the bottom of the axes)."""
     height = _stage_height(stage, text_width=text_width)
     bottom = top - height
+    x0 = _column_left()
     _box(
         ax,
-        _MARGIN,
+        x0,
         bottom,
-        FIGURE_WIDTH - 2 * _MARGIN,
+        COLUMN_WIDTH,
         height,
-        _HIGHLIGHT_FILL if stage.highlight else _STAGE_FILL,
+        fill=FILL_BLUE if stage.highlight else FILL_PAPER,
+        stroke=STROKE_BLUE if stage.highlight else INK,
     )
-    if stage.highlight:
-        ax.add_patch(
-            Rectangle((_MARGIN, bottom), 0.055, height, facecolor=BLUE, edgecolor="none", zorder=2)
-        )
-    left = _MARGIN + _PAD_X
-    ax.text(
-        left,
-        top - _PAD_Y - _TITLE_HEIGHT / 2,
-        str(number),
-        fontsize=TITLE_SIZE,
-        fontweight="bold",
-        color=BLUE,
-        va="center",
-        ha="left",
-        zorder=3,
-    )
+    left = x0 + _PAD_X
+    title_y = top - _PAD_Y - _TITLE_HEIGHT / 2
+    _draw_number(ax, number, left + _NUMBER_RADIUS, title_y)
     ax.text(
         left + _NUMBER_WIDTH,
-        top - _PAD_Y - _TITLE_HEIGHT / 2,
+        title_y,
         stage.title,
-        fontsize=TITLE_SIZE,
-        fontweight="bold",
-        color=INK_PRIMARY,
+        fontproperties=hand_font(TITLE_SIZE),
+        color=INK,
+        path_effects=_bold(),
         va="center",
         ha="left",
         zorder=3,
     )
     if stage.badge is not None:
-        _draw_badge(ax, stage.badge, top - _PAD_Y - _TITLE_HEIGHT / 2)
+        _draw_badge(ax, stage.badge, title_y)
     y = top - _PAD_Y - _TITLE_HEIGHT
-    y = _draw_lines(ax, _wrap(stage.detail, fontsize=DETAIL_SIZE, width=text_width), left, y)
+    y = _draw_lines(
+        ax, _wrap(stage.detail, fontsize=DETAIL_SIZE, width=text_width), left + _NUMBER_WIDTH, y
+    )
     for label, detail in stage.sub:
         y = _draw_sub(ax, label, detail, y - _SUB_GAP, text_width=text_width)
+
+
+def _draw_number(ax: Axes, number: int, cx: float, cy: float) -> None:
+    """The step number inside a hand-drawn circle."""
+    ax.add_patch(
+        _sketchy(
+            Ellipse(
+                (cx, cy),
+                2 * _NUMBER_RADIUS,
+                2 * _NUMBER_RADIUS,
+                facecolor=FILL_YELLOW,
+                edgecolor=INK,
+                linewidth=_STROKE_WIDTH,
+                zorder=2,
+            )
+        )
+    )
+    ax.text(
+        cx,
+        cy - 0.01,
+        str(number),
+        fontproperties=hand_font(TITLE_SIZE - 1),
+        color=INK,
+        path_effects=_bold(),
+        va="center",
+        ha="center",
+        zorder=3,
+    )
 
 
 def _draw_lines(ax: Axes, lines: Sequence[str], x: float, y: float) -> float:
@@ -254,8 +376,8 @@ def _draw_lines(ax: Axes, lines: Sequence[str], x: float, y: float) -> float:
             x,
             y - _LINE_HEIGHT / 2,
             line,
-            fontsize=DETAIL_SIZE,
-            color=INK_SECONDARY,
+            fontproperties=hand_font(DETAIL_SIZE),
+            color=INK_SOFT,
             va="center",
             ha="left",
             zorder=3,
@@ -267,30 +389,41 @@ def _draw_lines(ax: Axes, lines: Sequence[str], x: float, y: float) -> float:
 def _draw_sub(ax: Axes, label: str, detail: str, top: float, *, text_width: float) -> float:
     """Draw one nested box of the encoder stage; return the y below it."""
     width = text_width - 2 * _PAD_X
-    lines = _sub_lines(label, detail, width)
+    lines = _wrap(_sub_text(label, detail), fontsize=DETAIL_SIZE, width=width)
     height = 2 * _PAD_Y + len(lines) * _LINE_HEIGHT
-    x = _MARGIN + _PAD_X + _NUMBER_WIDTH
-    _box(ax, x, top - height, FIGURE_WIDTH - _MARGIN - _PAD_X - x, height, _SUB_FILL)
+    x = _column_left() + _PAD_X + _NUMBER_WIDTH
+    _box(
+        ax,
+        x,
+        top - height,
+        COLUMN_WIDTH - 2 * _PAD_X - _NUMBER_WIDTH,
+        height,
+        fill=FILL_PAPER,
+        rounding=0.07,
+    )
     y = top - _PAD_Y
     for index, line in enumerate(lines):
-        bold, _, rest = line.partition(" - ") if index == 0 else ("", "", line)
+        if index == 0 and line.startswith(label):
+            bold, rest = label, line[len(label) :]
+        else:
+            bold, rest = "", line
         text = ax.text(
             x + _PAD_X,
             y - _LINE_HEIGHT / 2,
             bold,
-            fontsize=DETAIL_SIZE,
-            fontweight="bold",
-            color=INK_PRIMARY,
+            fontproperties=hand_font(DETAIL_SIZE),
+            color=INK,
+            path_effects=_bold(),
             va="center",
             ha="left",
             zorder=3,
         )
         ax.annotate(
-            f"  {rest}" if bold else rest,
+            rest,
             xycoords=text,
             xy=(1.0, 0.5),
-            fontsize=DETAIL_SIZE,
-            color=INK_SECONDARY,
+            fontproperties=hand_font(DETAIL_SIZE),
+            color=INK_SOFT,
             va="center",
             ha="left",
             zorder=3,
@@ -300,36 +433,39 @@ def _draw_sub(ax: Axes, label: str, detail: str, top: float, *, text_width: floa
 
 
 def _draw_badge(ax: Axes, text: str, y: float) -> None:
-    """Small filled label at the right edge of a stage title."""
-    right = FIGURE_WIDTH - _MARGIN - _PAD_X
+    """Small sticky-note label at the right edge of a stage title."""
+    right = _column_left() + COLUMN_WIDTH - _PAD_X
+    width = _text_width(text, BADGE_SIZE) + 0.22
+    height = 0.27
+    _box(ax, right - width, y - height / 2, width, height, fill=FILL_YELLOW, rounding=0.05)
     ax.text(
-        right,
+        right - width / 2,
         y,
         text,
-        fontsize=BADGE_SIZE,
-        fontweight="bold",
-        color=SURFACE,
+        fontproperties=hand_font(BADGE_SIZE),
+        color=INK,
+        path_effects=_bold(),
         va="center",
-        ha="right",
+        ha="center",
         zorder=4,
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": BLUE, "edgecolor": "none"},
     )
 
 
 def _draw_arrow(ax: Axes, top: float) -> None:
-    """Short downward arrow filling the gap between two stages."""
-    x = _MARGIN + _PAD_X + _NUMBER_WIDTH / 2
+    """Hand-drawn downward arrow in the middle of the gap between two stages."""
+    x = FIGURE_WIDTH / 2
     ax.add_patch(
-        FancyArrowPatch(
-            (x, top),
-            (x, top - _ARROW_GAP),
-            arrowstyle="-|>",
-            mutation_scale=9,
-            color=AXIS_COLOR,
-            linewidth=1.0,
-            shrinkA=1.0,
-            shrinkB=1.0,
-            zorder=2,
+        _sketchy(
+            FancyArrowPatch(
+                (x, top),
+                (x, top - _ARROW_GAP),
+                arrowstyle="-|>,head_length=4,head_width=3",
+                color=INK,
+                linewidth=_STROKE_WIDTH,
+                shrinkA=2.0,
+                shrinkB=2.0,
+                zorder=2,
+            )
         )
     )
 
@@ -340,21 +476,21 @@ DEFAULT_TITLE = "One forward pass: Chronos-2 reads a whole group of series at on
 def plot_architecture(
     *, sizes: Chronos2Sizes | None = None, title: str | None = DEFAULT_TITLE
 ) -> Figure:
-    """Draw the six stages of a Chronos-2 forward pass as a top-to-bottom flow.
+    """Draw the six stages of a Chronos-2 forward pass as a centred top-to-bottom sketch.
 
     Parameters
     ----------
     sizes
         Sizes printed in the boxes; ``None`` uses the published ``amazon/chronos-2`` values.
-        Pass ``chronos2_sizes(pipeline)` to read them from a loaded checkpoint instead.
+        Pass ``chronos2_sizes(pipeline)`` to read them from a loaded checkpoint instead.
     title
-        Figure title, or ``None`` for no title.
+        Figure title, centred above the column, or ``None`` for no title.
     """
     sizes = sizes or Chronos2Sizes()
     stages = _stages(sizes)
-    text_width = FIGURE_WIDTH - 2 * (_MARGIN + _PAD_X) - _NUMBER_WIDTH
+    text_width = COLUMN_WIDTH - 2 * _PAD_X - _NUMBER_WIDTH
     heights = [_stage_height(stage, text_width=text_width) for stage in stages]
-    title_space = 0.42 if title is not None else 0.0
+    title_space = _FIGURE_TITLE_SPACE if title is not None else 0.0
     height = sum(heights) + _ARROW_GAP * (len(stages) - 1) + title_space + 2 * _MARGIN
     with style_context():
         fig = plt.figure(figsize=(FIGURE_WIDTH, height))
@@ -372,13 +508,13 @@ def plot_architecture(
                 top -= _ARROW_GAP
         if title is not None:
             ax.text(
-                _MARGIN,
-                height - _MARGIN,
+                FIGURE_WIDTH / 2,
+                height - _MARGIN - 0.1,
                 title,
-                fontsize=13,
-                fontweight="bold",
-                color=INK_PRIMARY,
+                fontproperties=hand_font(FIGURE_TITLE_SIZE),
+                color=INK,
+                path_effects=_bold(),
                 va="top",
-                ha="left",
+                ha="center",
             )
     return fig

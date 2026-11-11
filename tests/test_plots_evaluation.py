@@ -12,6 +12,7 @@ from c2p.plots.evaluation import (
     plot_backtest_windows,
     plot_coverage,
     plot_skill_scores,
+    plot_what_if,
     window_schedule,
 )
 from c2p.schema import INTERVALS
@@ -177,3 +178,52 @@ def test_backtest_windows_can_truncate_the_context(schedule: pd.DataFrame) -> No
 def test_backtest_windows_rejects_a_non_positive_context_window(schedule: pd.DataFrame) -> None:
     with pytest.raises(ValueError, match="context_shown must be a positive"):
         plot_backtest_windows(schedule, context_shown=pd.Timedelta(0))
+
+
+def what_if_frame() -> pd.DataFrame:
+    times = pd.date_range("2018-12-30 23:00", periods=24, freq="h")
+    frames = []
+    for name, shift in (("Operator's forecast", 0.0), ("Wind x1.5", -0.8), ("Wind x0.5", 1.1)):
+        median = 70.0 + shift + pd.Series(range(24)) % 6
+        frames.append(
+            pd.DataFrame(
+                {
+                    "timestamp": times,
+                    "predictions": median,
+                    "0.1": median - 3.0,
+                    "0.9": median + 3.0,
+                    "scenario": name,
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_what_if_overlays_every_scenario_and_labels_its_mean() -> None:
+    frame = what_if_frame()
+    actuals = pd.DataFrame({"timestamp": frame["timestamp"].unique(), "price": 71.0})
+    ax = plot_what_if(frame, baseline="Operator's forecast", actuals=actuals, target="price")
+    try:
+        # The legend may wrap into rows, which reorders its entries: compare as a set.
+        labels = {text.get_text() for text in ax.get_legend().get_texts()}
+        assert labels == {
+            "Actual",
+            "Operator's forecast (mean 72.50)",
+            "Wind x1.5 (mean 71.70)",
+            "Wind x0.5 (mean 73.60)",
+            "80% interval, Operator's forecast",
+        }
+        assert len(ax.lines) == 4  # the actual and three medians, on one pair of axes
+        assert len(ax.collections) == 1  # one band: the baseline's interval
+    finally:
+        plt.close(ax.figure)
+
+
+def test_what_if_rejects_bad_input() -> None:
+    frame = what_if_frame()
+    with pytest.raises(ValueError, match="not a scenario"):
+        plot_what_if(frame, baseline="Nope")
+    with pytest.raises(ValueError, match="missing the columns"):
+        plot_what_if(frame.drop(columns="0.9"), baseline="Operator's forecast")
+    with pytest.raises(ValueError, match="together"):
+        plot_what_if(frame, baseline="Operator's forecast", target="price")

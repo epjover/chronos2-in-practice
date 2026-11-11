@@ -1,9 +1,10 @@
-"""Figures of the evaluation article (part 2): window schedule, skill scores and coverage.
+"""Figures of the evaluation articles: window schedule, skill scores, coverage and what-if.
 
-These three charts answer the three questions a backtest raises, in order: *which data did each
+Three charts answer the three questions a backtest raises, in order: *which data did each
 forecast see* (:func:`plot_backtest_windows`), *is the model better than the baselines, and by
 enough to believe it* (:func:`plot_skill_scores`), and *are the prediction intervals honest*
-(:func:`plot_coverage`).
+(:func:`plot_coverage`). A fourth, :func:`plot_what_if`, overlays the forecasts of one window
+under different inputs (part 3).
 
 They reuse the shared style of :mod:`c2p.plotting`, including its private axis helpers, so that
 a figure drawn here is indistinguishable from one drawn there; the alternative, restating the
@@ -26,8 +27,10 @@ from c2p.plotting import (
     BLUE,
     INK_PRIMARY,
     INK_SECONDARY,
+    LINE_WIDTH,
     MODEL_COLORS,
     NEUTRAL_BAR,
+    PALETTE,
     SURFACE,
     _format_time_axis,
     _legend_above,
@@ -36,12 +39,14 @@ from c2p.plotting import (
     set_axes_title,
     style_context,
 )
+from c2p.schema import PREDICTION_COL, TIMESTAMP_COL, quantile_col
 
 __all__ = [
     "coverage_long",
     "plot_backtest_windows",
     "plot_coverage",
     "plot_skill_scores",
+    "plot_what_if",
     "window_schedule",
 ]
 
@@ -354,3 +359,80 @@ def coverage_long(summary: pd.DataFrame, intervals: Mapping[float, object]) -> p
         for level in intervals
     ]
     return pd.DataFrame(rows)
+
+
+# --- What-if: one window under different inputs ---------------------------------------------
+
+
+def plot_what_if(
+    forecasts: pd.DataFrame,
+    *,
+    baseline: str,
+    actuals: pd.DataFrame | None = None,
+    target: str | None = None,
+    scenario_column: str = "scenario",
+    interval: tuple[float, float] = (0.1, 0.9),
+    title: str | None = None,
+    ylabel: str | None = None,
+    ax: Axes | None = None,
+) -> Axes:
+    """Median forecast of each scenario over one horizon, overlaid on the same axes.
+
+    ``forecasts`` is long: one row per scenario and ``timestamp``, with ``predictions`` and the
+    two quantile columns of ``interval``. The ``baseline`` scenario is drawn in blue with its
+    interval as a band; the other scenarios are lines in the next palette colours, in order of
+    first appearance. Scenarios of a sensitivity analysis usually differ by less than the daily
+    cycle, which separate panels hide, so each legend entry also carries the scenario's mean
+    prediction. ``actuals`` (with ``timestamp`` and the ``target`` column) adds what happened.
+    """
+    lower, upper = (quantile_col(level) for level in interval)
+    required = [scenario_column, TIMESTAMP_COL, PREDICTION_COL, lower, upper]
+    missing = [column for column in required if column not in forecasts.columns]
+    if missing:
+        raise ValueError(f"forecasts is missing the columns {missing}.")
+    names = list(dict.fromkeys(forecasts[scenario_column]))
+    if baseline not in names:
+        raise ValueError(f"baseline {baseline!r} is not a scenario; scenarios: {names}.")
+    if (actuals is None) != (target is None):
+        raise ValueError("Pass actuals and target together, or neither.")
+    others = [name for name in names if name != baseline]
+    if len(others) > len(PALETTE) - 1:
+        raise ValueError(f"At most {len(PALETTE) - 1} scenarios besides the baseline.")
+    colors = {baseline: BLUE, **dict(zip(others, PALETTE[1:], strict=False))}
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 4.2), layout="constrained")
+        handles: list[Line2D | Patch] = []
+        labels: list[str] = []
+        base = forecasts[forecasts[scenario_column] == baseline].sort_values(TIMESTAMP_COL)
+        times = pd.to_datetime(base[TIMESTAMP_COL])
+        ax.fill_between(times, base[lower], base[upper], color=BLUE, alpha=0.14, linewidth=0)
+        if actuals is not None and target is not None:
+            rows = actuals.sort_values(TIMESTAMP_COL)
+            (line,) = ax.plot(
+                pd.to_datetime(rows[TIMESTAMP_COL]),
+                rows[target],
+                color=INK_SECONDARY,
+                linewidth=LINE_WIDTH,
+            )
+            handles.append(line)
+            labels.append("Actual")
+        for name in [baseline, *others]:
+            rows = forecasts[forecasts[scenario_column] == name].sort_values(TIMESTAMP_COL)
+            (line,) = ax.plot(
+                pd.to_datetime(rows[TIMESTAMP_COL]),
+                rows[PREDICTION_COL],
+                color=colors[name],
+                linewidth=LINE_WIDTH + (0.4 if name == baseline else 0.0),
+            )
+            handles.append(line)
+            labels.append(f"{name} (mean {rows[PREDICTION_COL].mean():,.2f})")
+        handles.append(Patch(facecolor=BLUE, alpha=0.14, linewidth=0))
+        labels.append(f"{round(100 * (interval[1] - interval[0]))}% interval, {baseline}")
+        _style_axes(ax, grid="y")
+        _format_time_axis(ax)
+        ax.margins(x=0.0)
+        if ylabel is not None:
+            ax.set_ylabel(ylabel)
+        _legend_above(ax, handles, labels, title)
+    return ax

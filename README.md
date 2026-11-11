@@ -36,6 +36,16 @@ images (`articles/medium/tables/`), ready to paste; regenerate it after editing 
 uv run python scripts/render_article_tables.py
 ```
 
+"Every number is read from `results/`" is checked, not promised. `scripts/audit_articles.py`
+rebuilds every numeric table row of the five drafts from the CSV files, rounding each value once
+from the stored number, and requires the row to appear in the article as written. It also binds
+every `c2p` call in the articles' code blocks to the real signature, so a snippet cannot omit a
+required argument. The same checks run in the fast test suite:
+
+```bash
+uv run python scripts/audit_articles.py
+```
+
 ## Quickstart (uv)
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
@@ -146,7 +156,7 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── monitoring.py       # prediction log, delayed actuals, rolling metrics, alerts
 │   ├── conformal.py        # conformalized quantile regression: honest intervals after the fact
 │   ├── plotting.py         # article figures
-│   ├── plots/              # figures specific to one article (architecture, evaluation)
+│   ├── plots/              # figures specific to one article (architecture, evaluation, production)
 │   │   └── fonts/          # Excalifont (OFL 1.1), for the hand-drawn architecture diagram
 │   └── results.py          # saving and loading experiment CSV files
 ├── notebooks/              # 00_data_checks ... 08_finetune_full
@@ -168,6 +178,7 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 ├── scripts/
 │   ├── set_repo_url.py     # sets the GitHub owner/name used in links
 │   ├── render_article_tables.py  # article tables -> PNG + Medium-ready copies
+│   ├── audit_articles.py   # article tables and code blocks checked against results/ and c2p
 │   ├── fetch_cloud_prices.py  # AWS Price List API -> data/reference/cloud_prices.csv
 │   └── cost_table.py       # joins measured throughput with published rates
 ├── tests/                  # pytest suite

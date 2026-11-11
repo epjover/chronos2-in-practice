@@ -97,6 +97,8 @@ convention = "numpy"
 "*.ipynb" = ["E402", "D", "ANN", "PLW"]
 "tests/*" = ["D", "ANN", "PLW", "PTH"]
 "conftest.py" = ["D", "ANN"]
+# The audit compares against the articles' typography: true minus, en dash, multiplication sign.
+"scripts/audit_articles.py" = ["RUF001", "RUF002"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

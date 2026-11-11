@@ -1,0 +1,523 @@
+"""Check the article drafts against the results they quote.
+
+The articles promise that every number is read from a CSV in ``results/``. This script holds
+them to it without running a model:
+
+1. **Tables.** Every numeric table row of the five articles is rebuilt from the CSV files, with
+   each value rounded once from the stored number, and must appear in the article word for
+   word. A value typed from a rounded printout (0.0185 read as "1.9%") fails here.
+2. **Code.** Every ``from c2p... import`` in a Python block must resolve, and every call to an
+   imported ``c2p`` function or class must bind to its real signature, so a snippet that omits
+   a required argument is caught before a reader copies it.
+3. **Text hygiene.** No em dashes, and none of the prefixes an assisted rewrite can leave
+   behind ("Here is the rewritten paragraph").
+
+Usage::
+
+    uv run python scripts/audit_articles.py        # exit code 1 if anything is off
+
+The same checks run in the fast test suite (``tests/test_audit_articles.py``).
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib
+import inspect
+import re
+import sys
+from collections.abc import Callable, Iterator, Sequence
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from c2p.config import find_repo_root
+
+MINUS = "\u2212"  # the articles write negative numbers with a true minus sign
+EM_DASH = "\u2014"
+LEAK_PATTERNS = re.compile(
+    r"(^here is the|^here's the|rewritten (paragraph|passage|text)|as requested|^sure[,!]|"
+    r"certainly[,!]|i have (rewritten|removed)|without em dashes)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# --- Formatting: one rounding, from the stored value -----------------------------------------
+
+
+def half_up(value: float, decimals: int) -> str:
+    """``value`` rounded half up to ``decimals`` places, as an unsigned string.
+
+    The value is first snapped to ten decimals so that binary noise (0.76249999999) does not
+    turn a schoolbook tie into a round-down.
+    """
+    snapped = Decimal(repr(round(abs(float(value)), 10)))
+    return str(snapped.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP))
+
+
+def signed(value: float, decimals: int = 1) -> str:
+    """``+1.8`` / ``−0.2``: explicit sign, true minus."""
+    return f"{MINUS if value < 0 else '+'}{half_up(value, decimals)}"
+
+
+def negative(value: float, decimals: int) -> str:
+    """Unsigned when positive, true minus when negative (``0.00053`` / ``−0.00007``)."""
+    return f"{MINUS if value < 0 else ''}{half_up(value, decimals)}"
+
+
+def pct(value: float, decimals: int = 1) -> str:
+    """A fraction as an unsigned percentage without the sign: 0.6386 -> ``63.9``."""
+    return half_up(100 * value, decimals)
+
+
+def spct(value: float, decimals: int = 1) -> str:
+    """A fraction as a signed percentage: 0.018492 -> ``+1.8``."""
+    return signed(100 * value, decimals)
+
+
+def thousands(value: float, decimals: int = 0) -> str:
+    """Half-up rounding with a thousands separator: 4210.9 -> ``4,211``."""
+    whole, _, fraction = half_up(value, decimals).partition(".")
+    return f"{int(whole):,}" + (f".{fraction}" if fraction else "")
+
+
+def table_row(*values: str) -> str:
+    """A Markdown table row from its cells: ``| a | b |``."""
+    return "| " + " | ".join(values) + " |"
+
+
+def interval(row: pd.Series) -> str:
+    """``+1.8% [+0.5, +3.1]`` from a skill-table row."""
+    return f"{spct(row['skill'])}% [{spct(row['ci_low'])}, {spct(row['ci_high'])}]"
+
+
+# --- Expected rows, article by article --------------------------------------------------------
+
+
+class Results:
+    """Lazy access to ``results/<name>.csv``."""
+
+    def __init__(self, root: Path) -> None:
+        self.folder = root / "results"
+        self._cache: dict[str, pd.DataFrame] = {}
+
+    def __call__(self, name: str) -> pd.DataFrame:
+        """Return the CSV ``results/<name>.csv`` as a DataFrame (cached)."""
+        if name not in self._cache:
+            self._cache[name] = pd.read_csv(self.folder / f"{name}.csv")
+        return self._cache[name]
+
+
+def article_1(r: Results) -> Iterator[str]:
+    """First forecast and the messy-data table."""
+    first = r("01_first_forecast_metrics").iloc[0]
+    mae = f"{half_up(first['MAE'], 0)} MW ({pct(first['WAPE'])}% of mean load)"
+    yield table_row("MAE of the median", mae)
+    yield f"| WQL | {half_up(first['WQL'], 4)} |"
+    yield f"| 80% band held | {pct(first['coverage_80'])}% of 168 hours |"
+    yield f"| 98% band held | {pct(first['coverage_98'])}% of 168 hours |"
+    labels = {
+        "spike_as_nan": "Spike set to NaN",
+        "gaps_nan": "Gaps as NaN",
+        "spike": "Spike (×3)",
+        "gaps_zero": "Gaps as 0",
+        "rows_dropped_freq": 'Rows dropped, freq="h"',
+    }
+    messy = r("00_messy_data_summary").set_index("scenario")
+    for key, label in labels.items():
+        row = messy.loc[key]
+        low, high = row["WQL_change_ci_low_pct"], row["WQL_change_ci_high_pct"]
+        yield table_row(
+            label,
+            f"{signed(row['WQL_change_pct'])}%",
+            f"{signed(row['WQL_change_gmean_pct'])}%",
+            f"[{signed(low)}%, {signed(high)}%]",
+            f"{int(row['n_windows_worse'])} / {int(row['n_windows'])}",
+        )
+
+
+def article_2(r: Results) -> Iterator[str]:
+    """Baselines, coverage, context sweep, cold start and the two prose intervals."""
+    summary = r("02_model_summary").set_index("model")
+    skill = r("02_skill_table").set_index("model")
+    labels = {
+        "chronos-bolt": "chronos-bolt",
+        "chronos-2": "chronos-2",
+        "seasonal_naive_weekly": "seasonal_naive (168 h)",
+        "auto_ets": "auto_ets",
+    }
+    for key, label in labels.items():
+        s, k = summary.loc[key], skill.loc[key]
+        if k["skill"] > 0:
+            cell = f"{pct(k['skill'])}% [{pct(k['ci_low'])}, {pct(k['ci_high'])}]"
+        else:
+            cell = interval(k)
+        yield (
+            f"| {label} | {half_up(s['WQL'], 4)} | {half_up(s['MASE'], 3)} | {pct(s['WAPE'])}% "
+            f"| {cell} | {pct(k['win_rate'], 0)}% |"
+        )
+    naive = summary.loc["seasonal_naive"]
+    yield (
+        f"| seasonal_naive (24 h) | {half_up(naive['WQL'], 4)} | {half_up(naive['MASE'], 3)} "
+        f"| {pct(naive['WAPE'])}% | 0.0% | n/a |"
+    )
+    coverage = r("02_coverage").pivot_table(index="model", columns="nominal", values="achieved")
+    for model in ("chronos-2", "chronos-bolt", "seasonal_naive", "auto_ets"):
+        yield f"| {model} | {pct(coverage.loc[model, 0.8])}% | {pct(coverage.loc[model, 0.98])}% |"
+    sweep = r("03_context_sweep").pivot_table(index="context", columns="horizon", values="skill")
+    for context, row in sweep.iterrows():
+        yield f"| {int(context):,} | {pct(row[24])}% | {pct(row[168])}% |"
+    names = {
+        72: "72 h (3 days)",
+        168: "168 h (1 week)",
+        336: "336 h (2 weeks)",
+        504: "504 h (3 weeks)",
+    }
+    cold = r("04_coldstart_sweep").set_index(["history_hours", "measure"])
+    for hours, name in names.items():
+        cost = cold.loc[(hours, "Cost of a short history")]
+        gain = cold.loc[(hours, "Cross-learning gain")]
+        yield f"| {name} | {interval(cost)} | {interval(gain)} |"
+    synth = r("02_contamination").set_index("model").loc["chronos-2-synth"]
+    yield f"{pct(synth['skill'])}% worse"
+    yield f"[{pct(synth['ci_high'])}%, {pct(synth['ci_low'])}%]"
+    joint = r("04_multivariate_skill").set_index("target")
+    yield f"load changes by only {interval(joint.loc['load_actual'])}"
+    yield f"price improves by {interval(joint.loc['price_actual'])}"
+
+
+def article_3(r: Results) -> Iterator[str]:
+    """EPF-DE, the covariate ladder, holidays, the leak, attribution and the what-if."""
+    epf_wql = r("05_epf_de_metrics").groupby("model")["WQL"].mean()
+    epf = r("05_epf_de_skill").set_index("model")
+    yield f"| {half_up(epf_wql['univariate'], 4)} | n/a | n/a |"
+    for arm in ("past_only", "known_future"):
+        wins = f"{pct(epf.loc[arm, 'win_rate'], 0)}%"
+        yield table_row(half_up(epf_wql[arm], 4), interval(epf.loc[arm]), wins)
+    coverage = r("05_epf_de_metrics").groupby("model")["coverage_80"].mean()
+    yield (
+        f"going {pct(coverage['univariate'])}%, then {pct(coverage['past_only'])}%, "
+        f"then {pct(coverage['known_future'])}%"
+    )
+    wql = r("05_price_ladder_metrics").groupby("model")["WQL"].mean()
+    ladder = r("05_price_ladder_skill").set_index("model")
+    yield f"| {half_up(wql['none'], 4)} | n/a | n/a |"
+    for rung in ("+calendar", "+TSO forecasts", "+past generation"):
+        wins = f"{pct(ladder.loc[rung, 'win_rate'], 0)}%"
+        yield table_row(half_up(wql[rung], 4), interval(ladder.loc[rung]), wins)
+    holidays = r("05_holiday_windows").set_index(["model", "windows"])
+    for arm in ("+holiday flag only", "+calendar"):
+        special = holidays.loc[(arm, "holiday windows")]
+        wins = round(special["win_rate"] * special["n_units"])
+        yield (
+            f"| {arm} | {interval(holidays.loc[(arm, 'all windows')])} "
+            f"| {interval(special)}, wins {wins} of {int(special['n_units'])} "
+            f"| {interval(holidays.loc[(arm, 'ordinary windows')])} |"
+        )
+    tso, observed = ladder.loc["+TSO forecasts"], ladder.loc["LEAK: observed as known"]
+    target = ladder.loc["LEAK: the target itself"]
+    yield f"| +TSO forecasts (no leak) | {spct(tso['skill'])}% | {pct(tso['win_rate'], 0)}% |"
+    yield (
+        f"| LEAK: observed values as known-future | {spct(observed['skill'])}% "
+        f"| {pct(observed['win_rate'], 0)}% |"
+    )
+    yield (
+        f"| LEAK: the target itself as known-future | {interval(target)} "
+        f"| {pct(target['win_rate'], 0)}% |"
+    )
+    cheap = r("06_covariate_importance").groupby(["player", "method"])["importance"].mean()
+    shapley = r("06_covariate_shapley").groupby("player")["shapley"].mean()
+    for player in ("calendar", "load forecast", "wind forecast", "solar forecast"):
+        yield (
+            f"| {player} | {negative(cheap[(player, 'Ablation')], 5)} "
+            f"| {negative(cheap[(player, 'Permutation')], 5)} | {negative(shapley[player], 5)} |"
+        )
+    segments = {
+        "lags 25-168": "lags 25–168 (rest of the week)",
+        "lags 169-672": "lags 169–672 (rest of four weeks)",
+        "lags 1-24": "lags 1–24 (the last day)",
+        "lags 673+": "lags 673+ (older)",
+    }
+    context = r("06_context_shapley").groupby("player")["shapley"].mean()
+    for key, label in segments.items():
+        yield f"| {label} | {half_up(context[key], 4)} |"
+    ratio = context.sum() / shapley.sum()  # the text rounds it to "about twenty-five times"
+    yield (
+        "about twenty-five times as much as the covariates"
+        if 22.5 <= ratio < 27.5
+        else f"a context-to-covariate ratio of about {ratio:.0f} times, not twenty-five"
+    )
+    price = r("06_what_if").groupby("wind_factor")["predictions"].mean()
+    yield f"| Operator's forecast | {half_up(price[1.0], 2)} EUR/MWh |"
+    yield f"| Wind × 1.5 | {half_up(price[1.5], 2)} ({signed(price[1.5] - price[1.0], 2)}) |"
+    yield f"| Wind × 0.5 | {half_up(price[0.5], 2)} ({signed(price[0.5] - price[1.0], 2)}) |"
+
+
+def article_4(r: Results) -> Iterator[str]:
+    """Rank sweep costs, skill, the full fine-tune and the out-of-domain check."""
+    costs = pd.concat([r("07_lora_costs"), r("08_full_costs")]).set_index("run")
+    for run in ("lora_r4", "lora_r8", "lora_r16"):
+        c = costs.loc[run]
+        yield (
+            f"| {run} | {int(c['trainable_parameters']):,} "
+            f"| {pct(c['trainable_parameters'] / c['total_parameters'], 2)}% "
+            f"| {half_up(c['train_seconds'] / 60, 1)} min | {thousands(c['peak_vram_mb'])} MB "
+            f"| {half_up(c['artifact_mb'], 1)} MB | {half_up(c['best_eval_loss'], 4)} |"
+        )
+    means = r("07_lora_metrics").groupby("model")[["WQL", "MASE", "WAPE"]].mean()
+    skill = r("07_lora_skill").set_index("model")
+    zero = means.loc["zero-shot"]
+    yield (
+        f"| zero-shot | {half_up(zero['WQL'], 4)} | {half_up(zero['MASE'], 3)} "
+        f"| {pct(zero['WAPE'])}% | n/a | n/a |"
+    )
+    for run in ("lora_r4", "lora_r8", "lora_r16"):
+        m, k = means.loc[run], skill.loc[run]
+        yield (
+            f"| {run} | {half_up(m['WQL'], 4)} | {half_up(m['MASE'], 3)} | {pct(m['WAPE'])}% "
+            f"| {interval(k)} | {pct(k['win_rate'], 0)}% |"
+        )
+    compare = r("08_comparison_metrics").groupby("model")
+    wql, latency = compare["WQL"].mean(), compare["seconds"].median() * 1000
+    full_skill = r("08_comparison_skill").set_index("model")
+    zero_latency = f"{half_up(latency['zero-shot'], 0)} ms"
+    yield table_row(
+        "zero-shot", half_up(wql["zero-shot"], 4), "n/a", "n/a", "n/a", "n/a", zero_latency
+    )
+    for run in ("lora_r8", "full"):
+        c = costs.loc[run]
+        yield (
+            f"| {run} | {half_up(wql[run], 4)} | {interval(full_skill.loc[run])} "
+            f"| {half_up(c['train_seconds'] / 60, 1)} min | {thousands(c['peak_vram_mb'])} MB "
+            f"| {half_up(c['artifact_mb'], 1)} MB | {half_up(latency[run], 0)} ms |"
+        )
+    away = r("08_forgetting_metrics").groupby("model")[["WQL", "MASE"]].mean()
+    away_skill = r("08_forgetting_skill").set_index("model")
+    untouched = away.loc["zero-shot"]
+    yield table_row(
+        "zero-shot", half_up(untouched["WQL"], 4), half_up(untouched["MASE"], 3), "n/a", "n/a"
+    )
+    for run in ("lora_r8", "full"):
+        a, k = away.loc[run], away_skill.loc[run]
+        yield (
+            f"| {run} | {half_up(a['WQL'], 4)} | {half_up(a['MASE'], 3)} | {interval(k)} "
+            f"| {pct(k['win_rate'], 0)}% |"
+        )
+    yield f"| LoRA rank 8 | {spct(skill.loc['lora_r8', 'skill'])}% |"
+    yield f"| LoRA rank 4 | {spct(skill.loc['lora_r4', 'skill'])}% |"
+    yield f"| Full fine-tune, 119M weights | {spct(full_skill.loc['full', 'skill'])}% |"
+
+
+def _skill_against(metrics: pd.DataFrame, model: str, baseline: pd.Series) -> float:
+    """fev-bench skill of ``model`` against a per-cutoff baseline WQL series."""
+    own = metrics.loc[metrics["model"] == model].set_index("cutoff")["WQL"]
+    ratio = own / baseline.reindex(own.index)
+    return float(1 - np.exp(np.log(ratio).mean()))
+
+
+def article_5(r: Results) -> Iterator[str]:
+    """Throughput, the small checkpoint, service latency, costs, monitoring and calibration."""
+    devices = {"cuda": "RTX 3070", "cpu": "8 CPU cores"}
+    names = {"amazon/chronos-2": "chronos-2", "autogluon/chronos-2-small": "chronos-2-small"}
+    for model, name in names.items():
+        for device, label in devices.items():
+            bench = r(f"bench_latency_{device}")
+            rows = bench[(bench["model"] == model) & (bench["context_length"] == 2048)]
+            speed = rows.set_index("batch_size")["series_per_second"]
+            cells = " | ".join(f"{half_up(speed[batch], 1)}/s" for batch in (1, 8, 32, 128))
+            yield f"| {name}, {label} | {cells} | {half_up(speed.max(), 0)}/s |"
+    small = r("bench_small_vs_base_metrics")
+    means = small.groupby("model")[["WQL", "coverage_80"]].mean()
+    k = r("bench_small_vs_base_skill").set_index("model").loc["chronos-2-small"]
+    naive = r("02_backtest_metrics")
+    naive = naive.loc[naive["model"] == "seasonal_naive"].set_index("cutoff")["WQL"]
+    base, tiny = means.loc["chronos-2"], means.loc["chronos-2-small"]
+    yield table_row(
+        "chronos-2",
+        "119.5M",
+        half_up(base["WQL"], 4),
+        f"{pct(base['coverage_80'])}%",
+        "n/a",
+        "n/a",
+        f"{pct(_skill_against(small, 'chronos-2', naive))}%",
+    )
+    yield (
+        f"| chronos-2-small | 27.9M | {half_up(tiny['WQL'], 4)} | {pct(tiny['coverage_80'])}% "
+        f"| {interval(k)} | {pct(k['win_rate'], 0)}% "
+        f"| {pct(_skill_against(small, 'chronos-2-small', naive))}% |"
+    )
+    for _, row in r("09_service_latency").iterrows():
+        yield (
+            f"| {int(row['n_series'])} | {thousands(row['client_p50_ms'], 1)} ms "
+            f"| {thousands(row['client_p95_ms'], 1)} ms | {thousands(row['server_p50_ms'], 1)} ms |"
+        )
+    cost = r("09_cost_per_million")
+    cost = cost[(cost["model"] == "amazon/chronos-2") & (cost["context_length"] == 2048)]
+    rates = r("09_hosting_rates").set_index("instance")
+    for instance in (
+        "ml.g4dn.xlarge",
+        "ml.g6.xlarge",
+        "ml.g5.xlarge",
+        "ml.g5.2xlarge",
+        "ml.c7i.2xlarge",
+        "ml.m5.2xlarge",
+    ):
+        c = cost.set_index("instance").loc[instance]
+        gpu = rates.loc[instance, "gpu"]
+        yield (
+            f"| {instance} | {int(c['vcpu'])} / {'none' if not gpu > 0 else int(gpu)} "
+            f"| {half_up(c['usd_per_hour'], 3)} | {thousands(c['usd_per_month'])} "
+            f"| {half_up(c['usd_per_million_forecasts'], 2)} |"
+        )
+    for _, row in r("09_serverless_cost").iterrows():
+        yield table_row(
+            names[row["model"]],
+            f"{int(row['context_length']):,}",
+            half_up(row["seconds_per_request"], 3),
+            half_up(row["usd_per_million_requests"], 2),
+        )
+    rolling = r("09_monitoring_rolling")
+    wape, cov = rolling["wape"], rolling["coverage"]
+    yield table_row(
+        "rolling WAPE (28 cutoffs)",
+        *(f"{pct(value, 2)}%" for value in (wape.min(), wape.median(), wape.max())),
+    )
+    yield table_row(
+        "80% interval coverage",
+        *(f"{pct(value)}%" for value in (cov.min(), cov.median(), cov.max())),
+    )
+    breaches, episodes = int(rolling["alert"].sum()), int(rolling["first_breach"].sum())
+    yield f"{breaches} of {len(rolling)} cutoffs breach, in {episodes} episodes"
+    summary = r("09_conformal_summary").set_index("model")
+    months = r("09_conformal_by_month")
+    worst = months.loc[months.groupby("model")["coverage"].idxmin()].set_index("model")
+    labels = {
+        "zero-shot": "zero-shot",
+        "conformal_additive": "conformal, additive",
+        "conformal_scaled": "conformal, scaled",
+    }
+    for key, label in labels.items():
+        s, w = summary.loc[key], worst.loc[key]
+        month = pd.Period(w["period"]).strftime("%b")
+        skill = "n/a" if key == "zero-shot" else interval(s)
+        yield table_row(
+            label,
+            half_up(s["WQL"], 4),
+            f"{pct(s['coverage_80'])}%",
+            f"{pct(s['coverage_98'])}%",
+            skill,
+            f"{pct(w['coverage'])}% ({month})",
+        )
+    tail = summary["WQL_worst_decile"]
+    yield (
+        f"({half_up(tail['conformal_scaled'], 3)} with the scaled variant "
+        f"against {half_up(tail['zero-shot'], 3)}"
+    )
+    yield f"| 3.3× faster, {spct(k['skill'])}% |"
+
+
+EXPECTED: dict[str, Callable[[Results], Iterator[str]]] = {
+    "01": article_1,
+    "02": article_2,
+    "03": article_3,
+    "04": article_4,
+    "05": article_5,
+}
+
+# --- Checks ---------------------------------------------------------------------------------
+
+
+def normalise(text: str) -> str:
+    """Drop bold and code marks and collapse whitespace, so only words and numbers compare."""
+    text = text.replace("**", "").replace("`", "")
+    return re.sub(r"\s+", " ", text)
+
+
+def check_rows(article: str, text: str, results: Results) -> list[str]:
+    """Rows rebuilt from the CSV files that the article does not contain."""
+    haystack = normalise(text)
+    return [
+        f"{article}: not found (rebuilt from results/): {row}"
+        for row in EXPECTED[article](results)
+        if normalise(row) not in haystack
+    ]
+
+
+def check_text(article: str, text: str) -> list[str]:
+    """Em dashes and leftovers of an assisted rewrite."""
+    problems = []
+    if EM_DASH in text:
+        problems.append(f"{article}: {text.count(EM_DASH)} em dash(es)")
+    for match in LEAK_PATTERNS.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        problems.append(f"{article}: rewrite leftover at line {line}: {match.group(0)!r}")
+    return problems
+
+
+def check_code(article: str, text: str) -> list[str]:
+    """Imports that do not resolve and ``c2p`` calls that do not bind to the real signature."""
+    problems = []
+    imported: dict[str, object] = {}  # an article imports a name once and reuses it later
+    for block in re.findall(r"```python\n(.*?)```", text, flags=re.DOTALL):
+        try:
+            tree = ast.parse(block)
+        except SyntaxError as error:
+            problems.append(f"{article}: Python block does not parse: {error}")
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("c2p"):
+                module = importlib.import_module(str(node.module))
+                for alias in node.names:
+                    if hasattr(module, alias.name):
+                        imported[alias.asname or alias.name] = getattr(module, alias.name)
+                    else:
+                        problems.append(f"{article}: {node.module} has no {alias.name!r}")
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            target = imported.get(node.func.id)
+            if target is None or not callable(target):
+                continue
+            if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+                keyword.arg is None for keyword in node.keywords
+            ):
+                continue  # *args / **kwargs: nothing to check statically
+            try:
+                inspect.signature(target).bind(
+                    *([None] * len(node.args)),
+                    **{str(keyword.arg): None for keyword in node.keywords},
+                )
+            except TypeError as error:
+                problems.append(
+                    f"{article}: {node.func.id}(...) at line {node.lineno} of its block: {error}"
+                )
+    return problems
+
+
+def audit(root: Path | None = None) -> list[str]:
+    """Run every check on the five articles and return the problems found."""
+    root = root if root is not None else find_repo_root()
+    results = Results(root)
+    problems: list[str] = []
+    for article in EXPECTED:
+        (path,) = sorted((root / "articles").glob(f"{article}-*.md"))
+        text = path.read_text(encoding="utf-8")
+        problems += check_text(article, text)
+        problems += check_rows(article, text, results)
+        problems += check_code(article, text)
+    return problems
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Print the problems, if any, and return the exit code."""
+    del argv
+    problems = audit()
+    for problem in problems:
+        print(problem)
+    print(f"{len(problems)} problem(s) in the article drafts.")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

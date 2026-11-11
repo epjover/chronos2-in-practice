@@ -4,7 +4,7 @@
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
-> Draft. Every number in the text is read from a CSV in [`results/`](../../results); each figure
+> Draft. Every number in the text is read from a CSV in [`results/`](https://github.com/epjover/chronos2-in-practice/tree/main/results); each figure
 > names the file to upload to Medium. Published open access (not metered); the AI disclosure above
 > follows [Medium's policy](https://help.medium.com/hc/en-us/articles/22576852947223-Artificial-Intelligence-AI-content-policy).
 
@@ -154,9 +154,11 @@ fit.
 The generational jump is just as visible. Chronos-Bolt, which sits in the same library and is one
 call away, scores 38.9 on fev-bench against 47.3. Part 2 uses it as a free baseline.
 
-**The leaderboard has already moved.** By 25 October 2026, TimesFM-3 (released 31 August 2026, under
-a non-commercial licence) and t0-gamma (13 October 2026) were both claiming higher scores than
-Chronos-2 on public leaderboards. So check
+**The leaderboard has already moved.** By 11 November 2026, three newer models were reporting
+higher fev-bench skill scores than Chronos-2's 47.3: Mistral's Timestral-209M at 50.4 (October
+2026, under a modified MIT licence), The Forecasting Company's t0-gamma at 49.4 (13 October 2026,
+Apache-2.0) and Google's TimesFM-3 at 49.0 (released 31 August 2026, under a non-commercial
+licence). Those figures come from the vendors' own model cards, so check
 [fev-bench](https://huggingface.co/spaces/autogluon/fev-bench) and
 [GIFT-Eval](https://huggingface.co/spaces/Salesforce/GIFT-Eval) before you quote a ranking, and date
 whatever snapshot you cite. Even so, Chronos-2 remains a defensible default for reasons a ranking
@@ -431,7 +433,8 @@ alone or in a group with its neighbours.
 6. Shchur, O., *et al.* (2025). *fev-bench*. arXiv:2509.26468. https://arxiv.org/abs/2509.26468
 7. Aksu, T., *et al.* (2024). *GIFT-Eval: A Benchmark for General Time Series Forecasting Model
    Evaluation*. arXiv:2410.10393. https://arxiv.org/abs/2410.10393
-8. Leaderboards, consulted 25 October 2026:
+8. Leaderboards (the scores quoted in section 2 are those of reference 12, consulted 11
+   November 2026):
    [fev-bench](https://huggingface.co/spaces/autogluon/fev-bench) and
    [GIFT-Eval](https://huggingface.co/spaces/Salesforce/GIFT-Eval)
 9. Dataset: *Hourly energy demand generation and weather* (CC0).
@@ -442,6 +445,11 @@ alone or in a group with its neighbours.
     *Five Ways to Fine-Tune Chronos-2, the Time Series Foundation Model*. Towards Data Science.
     https://towardsdatascience.com/five-questions-about-chronos-2-the-time-series-foundation-model/
     and https://towardsdatascience.com/five-ways-to-fine-tune-chronos-2-the-time-series-foundation-model/
+
+12. Model cards with the fev-bench scores quoted in section 2: `mistralai/Timestral-209M`,
+    https://huggingface.co/mistralai/Timestral-209M, `theforecastingcompany/t0-gamma`,
+    https://huggingface.co/theforecastingcompany/t0-gamma, and `google/timesfm-3.0-pytorch`,
+    https://huggingface.co/google/timesfm-3.0-pytorch
 
 **Suggested tags:** Time Series Forecasting · Machine Learning · Foundation Models · Python ·
 Deep Learning

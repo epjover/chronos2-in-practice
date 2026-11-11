@@ -346,7 +346,8 @@ future_more_wind = future.assign(
 
 ![Figure 6: results/figures/06_what_if.png](../results/figures/06_what_if.png)
 
-*Figure 6. The same day forecast three times, with the operator's wind forecast scaled.*
+*Figure 6. The same day forecast three times, with the operator's wind forecast scaled. Lines
+are the three medians; the band is the 80% interval of the unscaled forecast.*
 
 | Scenario | Mean predicted price |
 | --- | --- |

@@ -5,7 +5,7 @@ previous-generation Chronos-Bolt ties with Chronos-2 on a clean univariate serie
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
-> Draft for Medium. Every number is read from a CSV in [`results/`](../../results); each figure
+> Draft for Medium. Every number is read from a CSV in [`results/`](https://github.com/epjover/chronos2-in-practice/tree/main/results); each figure
 > names the file to upload. Published open access (not metered).
 
 ---
@@ -348,7 +348,7 @@ using.
    arXiv:2510.15821. https://arxiv.org/abs/2510.15821
 2. Shchur, O., *et al.* (2025). *fev-bench*. arXiv:2509.26468. https://arxiv.org/abs/2509.26468,
    and the `fev` package: https://github.com/autogluon/fev
-3. Hyndman, R. J. & Athanasopoulos, G. *Forecasting: Principles and Practice*, 3rd ed.
+3. Hyndman, R. J. & Athanasopoulos, G. (2021). *Forecasting: Principles and Practice*, 3rd ed.
    https://otexts.com/fpp3/
 4. Nixtla, `statsforecast`: https://github.com/Nixtla/statsforecast
 5. `amazon/chronos-bolt-base`: https://huggingface.co/amazon/chronos-bolt-base

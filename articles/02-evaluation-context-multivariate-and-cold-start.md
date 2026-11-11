@@ -365,7 +365,7 @@ using.
    arXiv:2510.15821. https://arxiv.org/abs/2510.15821
 2. Shchur, O., *et al.* (2025). *fev-bench*. arXiv:2509.26468. https://arxiv.org/abs/2509.26468,
    and the `fev` package: https://github.com/autogluon/fev
-3. Hyndman, R. J. & Athanasopoulos, G. *Forecasting: Principles and Practice*, 3rd ed.
+3. Hyndman, R. J. & Athanasopoulos, G. (2021). *Forecasting: Principles and Practice*, 3rd ed.
    https://otexts.com/fpp3/
 4. Nixtla, `statsforecast`: https://github.com/Nixtla/statsforecast
 5. `amazon/chronos-bolt-base`: https://huggingface.co/amazon/chronos-bolt-base

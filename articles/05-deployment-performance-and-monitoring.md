@@ -16,13 +16,15 @@ benchmark said 59×, and the reason it was wrong is the most useful lesson in th
 This part picks up from there, covering how fast it runs, where you can run it, what it costs, and
 how you find out when it stops working.
 
-One framing note before the numbers. As of October 2026 there's still no pay-per-call managed API
-for Chronos-2. The weights are Apache-2.0 and the library is public, but every path below runs the
-model **in your own account** and bills you for the compute, whether or not a request arrives.
+One framing note before the numbers. As of November 2026 AWS lists Chronos-2 in SageMaker
+JumpStart but sells no pay-per-call API for it. The weights are Apache-2.0 and the library is
+public, and every path below runs the model **in your own account** and bills you for the compute,
+whether or not a request arrives.
 That's the opposite of how a hosted LLM usually works, and it makes idle time, rather than latency,
-the dominant cost term for most forecasting workloads. (The contrast matters, since Google's
-BigQuery exposes TimesFM as the `AI.FORECAST` SQL function, billed through BigQuery. Nobody sells
-Chronos-2 that way.)
+the dominant cost term for most forecasting workloads. (Hosted alternatives exist outside AWS. Google's
+BigQuery exposes TimesFM as the `AI.FORECAST` SQL function, and third-party services such as The
+Forecasting Company's API serve Chronos-2 per request, with the provider choosing the deployed
+variant and its limits. This article stays with the paths where you control the model.)
 
 - **Code:** [`bench/`](https://github.com/epjover/chronos2-in-practice/tree/main/bench),
   [`deploy/`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy),
@@ -252,7 +254,7 @@ Cost tables go stale fast, so this one is generated rather than typed by hand.
 API** (public, no credentials needed, and it creates nothing) and writes
 [`data/reference/cloud_prices.csv`](../data/reference/cloud_prices.csv), recording the SKU, the
 effective date and the offer-file version alongside every rate. The figures below come from offer
-version `20261025032859` for `us-east-1`, with rates effective 2026-10-01.
+version `20261111023957` for `us-east-1`, with rates effective 2026-11-01.
 
 I went to the official source because the unofficial ones disagree. A quick survey of pricing blog
 posts turned up four different figures for `ml.g5.xlarge`, and the numbers spanned a 40% range. So
@@ -531,8 +533,8 @@ make for a small frame, though. A more interesting test would be a retail chain 
 hundredth store.
 
 **Watch the field.** Chronos-2 led fev-bench when its paper came out in October 2025. Since then,
-TimesFM-3 (August 2026, non-commercial licence) and t0-gamma (October 2026) have both claimed to
-beat it. The protocol in Part 2 is what to keep, and the model it describes can change. That's why
+TimesFM-3 (August 2026, non-commercial licence), t0-gamma and Mistral's Timestral (both October
+2026) have all claimed to beat it. The protocol in Part 2 is what to keep, and the model it describes can change. That's why
 the protocol was written down in the first place.
 
 ---
@@ -558,6 +560,8 @@ the protocol was written down in the first place.
     figure is from reference 1, with its footnote on batch, context and horizon).
 11. Amazon SageMaker AI, *Deploy models with Amazon SageMaker Serverless Inference* (memory size
     and compute). https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html
+12. The Forecasting Company API, *Overview* (available models, among them `chronos-2`).
+    https://docs.retrocast.com/documentation
 
 **Suggested tags:** Time Series Forecasting · MLOps · Machine Learning · Foundation Models ·
 Python

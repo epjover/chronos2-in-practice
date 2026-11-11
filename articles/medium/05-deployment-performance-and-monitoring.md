@@ -7,7 +7,7 @@ benchmark said 59×, and the reason it was wrong is the most useful lesson in th
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
-> Draft for Medium. Every number is read from a CSV in [`results/`](../../results); each figure
+> Draft for Medium. Every number is read from a CSV in [`results/`](https://github.com/epjover/chronos2-in-practice/tree/main/results); each figure
 > names the file to upload. Published open access (not metered).
 
 ---
@@ -16,13 +16,15 @@ benchmark said 59×, and the reason it was wrong is the most useful lesson in th
 This part picks up from there, covering how fast it runs, where you can run it, what it costs, and
 how you find out when it stops working.
 
-One framing note before the numbers. As of October 2026 there's still no pay-per-call managed API
-for Chronos-2. The weights are Apache-2.0 and the library is public, but every path below runs the
-model **in your own account** and bills you for the compute, whether or not a request arrives.
+One framing note before the numbers. As of November 2026 AWS lists Chronos-2 in SageMaker
+JumpStart but sells no pay-per-call API for it. The weights are Apache-2.0 and the library is
+public, and every path below runs the model **in your own account** and bills you for the compute,
+whether or not a request arrives.
 That's the opposite of how a hosted LLM usually works, and it makes idle time, rather than latency,
-the dominant cost term for most forecasting workloads. (The contrast matters, since Google's
-BigQuery exposes TimesFM as the `AI.FORECAST` SQL function, billed through BigQuery. Nobody sells
-Chronos-2 that way.)
+the dominant cost term for most forecasting workloads. (Hosted alternatives exist outside AWS. Google's
+BigQuery exposes TimesFM as the `AI.FORECAST` SQL function, and third-party services such as The
+Forecasting Company's API serve Chronos-2 per request, with the provider choosing the deployed
+variant and its limits. This article stays with the paths where you control the model.)
 
 - **Code:** [`bench/`](https://github.com/epjover/chronos2-in-practice/tree/main/bench),
   [`deploy/`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy),
@@ -40,7 +42,7 @@ Chronos-2 that way.)
 
 ## 1. Throughput: batch size matters more than hardware, until it doesn't
 
-[`bench/bench_cpu_gpu.py`](../bench/bench_cpu_gpu.py) sweeps three things the caller controls
+[`bench/bench_cpu_gpu.py`](https://github.com/epjover/chronos2-in-practice/blob/main/bench/bench_cpu_gpu.py) sweeps three things the caller controls
 (series per request, context length, and which checkpoint is loaded) on both CPU and GPU. Each cell
 gets timed 30 times after a discarded warm-up run, except for the slowest cell, which only gets 12
 runs because it hits the two-minute budget. The row records the median, the mean, the standard
@@ -65,8 +67,8 @@ the median of 30 calls and the band runs from the slowest 5% to the fastest 5%. 
 transformative on the GPU and nearly useless on the CPU; the 27.9M-parameter `chronos-2-small`
 sits a factor of three above the 119.5M-parameter base model everywhere.*
 
-Full results are in [`results/bench_latency_cuda.csv`](../../results/bench_latency_cuda.csv) and
-[`results/bench_latency_cpu.csv`](../../results/bench_latency_cpu.csv). What stands out is what happens
+Full results are in [`results/bench_latency_cuda.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/bench_latency_cuda.csv) and
+[`results/bench_latency_cpu.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/bench_latency_cpu.csv). What stands out is what happens
 at 2,048 hours of context (medians):
 
 ![Table 1: articles/medium/tables/05_table_1.png](tables/05_table_1.png)
@@ -76,7 +78,7 @@ at 2,048 hours of context (medians):
 
 
 **How much to trust a latency number.** A median hides a shape, so it helps to look at the shape
-itself ([`results/bench_stability.csv`](../../results/bench_stability.csv), drawn in Figure 2). On the
+itself ([`results/bench_stability.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/bench_stability.csv), drawn in Figure 2). On the
 GPU the slowest 5% of calls run 10% over the median in the typical cell and 34% over it in the
 worst one (`chronos-2-small`, one series, 512 hours). On the CPU the typical cell's slow tail is
 26% over the median, and single-series calls are far worse, with the 95th percentile for
@@ -108,7 +110,7 @@ bought about 1.4 points of skill, so this is what that trade costs on the other 
 **The small checkpoint runs more than three times faster and comes in roughly a quarter worse.**
 `chronos-2-small` is 3.3× faster on the GPU and 3.5× faster on the CPU at 2,048 hours. Part 1
 promised the other half of that trade, so
-[`bench/small_vs_base_accuracy.py`](../bench/small_vs_base_accuracy.py) runs both checkpoints
+[`bench/small_vs_base_accuracy.py`](https://github.com/epjover/chronos2-in-practice/blob/main/bench/small_vs_base_accuracy.py) runs both checkpoints
 through Part 2's protocol, using the same 365 day-ahead windows and 2,048 hours of context:
 
 ![Table 2: articles/medium/tables/05_table_2.png](tables/05_table_2.png)
@@ -135,7 +137,7 @@ created.**
 
 ### A container you run anywhere
 
-[`deploy/fastapi`](../deploy/fastapi/) is a FastAPI app that ships with a multi-stage Dockerfile,
+[`deploy/fastapi`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy/fastapi) is a FastAPI app that ships with a multi-stage Dockerfile,
 and the weights get baked in at build time, which means the container starts up offline. Every
 request passes through the same `validate_and_prepare` checklist used in the notebooks, and every
 response carries a SHA-256 hash of the canonical model input.
@@ -153,7 +155,7 @@ horizon:
 
 *Table 3. Columns: Series per request, Client p50, Client p95, Server p50.*
 
-(Source: [`results/09_service_latency.csv`](../../results/09_service_latency.csv), written by
+(Source: [`results/09_service_latency.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/09_service_latency.csv), written by
 `smoke_test.py --csv`.) The HTTP layer adds 2 to 27 ms on top of the model, which is negligible, but it helps to
 know this precisely so you don't end up chasing the wrong bottleneck.
 
@@ -170,7 +172,7 @@ saving is a few milliseconds on requests that take tens, and a silent wrong fore
 
 ### A managed endpoint in your account
 
-[`deploy/sagemaker`](../deploy/sagemaker/) bundles a handler together with the `c2p` package into a
+[`deploy/sagemaker`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy/sagemaker) bundles a handler together with the `c2p` package into a
 `model.tar.gz`, registers it, and spins up an endpoint. The handler speaks **the same JSON** as
 the FastAPI app, so a client built against one also works against the other, and the two can be
 compared on cost rather than on how much rewriting each one needed.
@@ -188,7 +190,7 @@ it does nothing until you pass `--yes`.
 
 ### Nothing at all: AutoGluon Cloud
 
-[`deploy/autogluon_cloud`](../deploy/autogluon_cloud/) uses `TimeSeriesFoundationModel`, which
+[`deploy/autogluon_cloud`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy/autogluon_cloud) uses `TimeSeriesFoundationModel`, which
 needs no handler, no image and no training job. It offers the three shapes a forecasting
 workload takes:
 
@@ -241,11 +243,11 @@ job.
 ## 3. What it costs, and which part of that number you can trust
 
 Cost tables go stale fast, so this one is generated rather than typed by hand.
-[`scripts/fetch_cloud_prices.py`](../scripts/fetch_cloud_prices.py) reads the **AWS Price List Bulk
+[`scripts/fetch_cloud_prices.py`](https://github.com/epjover/chronos2-in-practice/blob/main/scripts/fetch_cloud_prices.py) reads the **AWS Price List Bulk
 API** (public, no credentials needed, and it creates nothing) and writes
-[`data/reference/cloud_prices.csv`](../data/reference/cloud_prices.csv), recording the SKU, the
+[`data/reference/cloud_prices.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/data/reference/cloud_prices.csv), recording the SKU, the
 effective date and the offer-file version alongside every rate. The figures below come from offer
-version `20261025032859` for `us-east-1`, with rates effective 2026-10-01.
+version `20261111023957` for `us-east-1`, with rates effective 2026-11-01.
 
 I went to the official source because the unofficial ones disagree. A quick survey of pricing blog
 posts turned up four different figures for `ml.g5.xlarge`, and the numbers spanned a 40% range. So
@@ -316,7 +318,7 @@ which is what day-ahead forecasting really amounts to, calls for a batch job tha
 
 A backtest tells you a model *was* good. Production asks whether it still is, and the two differ in
 a structural way, because in production the actuals arrive after the forecast, often much later.
-Everything in [`src/c2p/monitoring.py`](../src/c2p/monitoring.py) is built around that delay.
+Everything in [`src/c2p/monitoring.py`](https://github.com/epjover/chronos2-in-practice/blob/main/src/c2p/monitoring.py) is built around that delay.
 
 ```python
 from c2p.monitoring import (
@@ -351,7 +353,7 @@ data feed broke, and you want to know that before the error metric reacts a mont
 only on the cutoff where a run of breaches starts. A threshold without this will page you every
 morning for a week, and then you'll mute it.
 
-[`monitoring/build_panel.py`](../monitoring/build_panel.py) demonstrates the loop by replaying 2018
+[`monitoring/build_panel.py`](https://github.com/epjover/chronos2-in-practice/blob/main/monitoring/build_panel.py) demonstrates the loop by replaying 2018
 in fast-forward. Each of the 365 cutoffs is forecast from its own past and written to the log with
 no actual attached, and the actuals are joined afterwards (the same order of events as production,
 but with the waiting removed). It produces 8,760 logged forecasts across 365 distinct input hashes.
@@ -403,12 +405,12 @@ al., 2019) is the fix that targets the bands instead, and it needs no training. 
 the actuals are known, you measure how far each interval missed by, and then widen future intervals
 by the quantile of those misses so that calibration coverage comes out right. The adjustment is
 learned once per quantile pair and per horizon step, and applied as a post-processing step
-([`src/c2p/conformal.py`](../src/c2p/conformal.py)).
+([`src/c2p/conformal.py`](https://github.com/epjover/chronos2-in-practice/blob/main/src/c2p/conformal.py)).
 
 The protocol is set up so that nothing can have seen 2018. We calibrate on the 184 day-ahead windows
 of the second half of 2017 (Part 4's validation period) and score on Part 2's 365 windows of 2018,
 through the same harness
-([`monitoring/calibrate_intervals.py`](../monitoring/calibrate_intervals.py)). There are two
+([`monitoring/calibrate_intervals.py`](https://github.com/epjover/chronos2-in-practice/blob/main/monitoring/calibrate_intervals.py)). There are two
 variants: an **additive** shift in megawatts, the textbook form for one series, and a **scaled**
 multiplier of the model's own interval width, the form that travels across series of different
 levels. In code, the calibrated model is the same `Forecaster` as before:
@@ -506,8 +508,8 @@ make for a small frame, though. A more interesting test would be a retail chain 
 hundredth store.
 
 **Watch the field.** Chronos-2 led fev-bench when its paper came out in October 2025. Since then,
-TimesFM-3 (August 2026, non-commercial licence) and t0-gamma (October 2026) have both claimed to
-beat it. The protocol in Part 2 is what to keep, and the model it describes can change. That's why
+TimesFM-3 (August 2026, non-commercial licence), t0-gamma and Mistral's Timestral (both October
+2026) have all claimed to beat it. The protocol in Part 2 is what to keep, and the model it describes can change. That's why
 the protocol was written down in the first place.
 
 ---
@@ -533,6 +535,8 @@ the protocol was written down in the first place.
     figure is from reference 1, with its footnote on batch, context and horizon).
 11. Amazon SageMaker AI, *Deploy models with Amazon SageMaker Serverless Inference* (memory size
     and compute). https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html
+12. The Forecasting Company API, *Overview* (available models, among them `chronos-2`).
+    https://docs.retrocast.com/documentation
 
 **Suggested tags:** Time Series Forecasting · MLOps · Machine Learning · Foundation Models ·
 Python

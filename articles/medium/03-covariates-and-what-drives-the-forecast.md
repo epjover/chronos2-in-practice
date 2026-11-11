@@ -5,7 +5,7 @@ Knowing only their history takes off 11%. The gap is the whole story.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
-> Draft for Medium. Every number is read from a CSV in [`results/`](../../results); each figure
+> Draft for Medium. Every number is read from a CSV in [`results/`](https://github.com/epjover/chronos2-in-practice/tree/main/results); each figure
 > names the file to upload. Published open access (not metered).
 
 ---
@@ -332,7 +332,8 @@ future_more_wind = future.assign(
 
 ![Figure 6: results/figures/06_what_if.png](../../results/figures/06_what_if.png)
 
-*Figure 6. The same day forecast three times, with the operator's wind forecast scaled.*
+*Figure 6. The same day forecast three times, with the operator's wind forecast scaled. Lines
+are the three medians; the band is the 80% interval of the unscaled forecast.*
 
 ![Table 7: articles/medium/tables/03_table_7.png](tables/03_table_7.png)
 

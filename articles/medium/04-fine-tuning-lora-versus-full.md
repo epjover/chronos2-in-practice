@@ -6,7 +6,7 @@ are smaller than the covariates in Part 3.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
-> Draft for Medium. Every number is read from a CSV in [`results/`](../../results); each figure
+> Draft for Medium. Every number is read from a CSV in [`results/`](https://github.com/epjover/chronos2-in-practice/tree/main/results); each figure
 > names the file to upload. Published open access (not metered).
 
 ---
@@ -133,7 +133,7 @@ Those settings aren't arbitrary and they aren't mine. `Chronos2Model` in `autogl
 `fine_tune_batch_size=32`, `fine_tune_context_length=2048`. Starting from the library's defaults
 means someone who never reads this repository can still reproduce the result.
 
-**What a rank sweep costs** ([`07_lora_costs.csv`](../../results/07_lora_costs.csv)), run for 1,000
+**What a rank sweep costs** ([`07_lora_costs.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/07_lora_costs.csv)), run for 1,000
 steps each on an RTX 3070:
 
 ![Table 2: articles/medium/tables/04_table_2.png](tables/04_table_2.png)

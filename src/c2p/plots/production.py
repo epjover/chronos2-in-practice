@@ -29,6 +29,7 @@ from c2p.plotting import (
     NEUTRAL_BAR,
     _legend_above,
     _style_axes,
+    set_axes_title,
     style_context,
 )
 
@@ -259,7 +260,7 @@ def plot_cost_per_million(
                 color=INK_SECONDARY,
             )
         if title is not None:
-            ax.set_title(title, loc="left", color=INK_PRIMARY)
+            set_axes_title(ax, title)
     return ax
 
 

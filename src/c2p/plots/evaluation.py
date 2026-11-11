@@ -33,6 +33,7 @@ from c2p.plotting import (
     _legend_above,
     _style_axes,
     assign_colors,
+    set_axes_title,
     style_context,
 )
 
@@ -208,7 +209,7 @@ def plot_skill_scores(
             xlabel if xlabel is not None else f"Skill score vs {baseline} (%), higher is better"
         )
         if title is not None:
-            ax.set_title(title, loc="left", color=INK_PRIMARY)
+            set_axes_title(ax, title)
     return ax
 
 

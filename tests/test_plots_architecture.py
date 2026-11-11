@@ -42,7 +42,7 @@ def test_default_figure_names_the_six_stages_and_the_published_sizes() -> None:
             assert stage in text, stage
         for number in ("8,192", "1,024", "21 quantile", "768", "12 blocks", "64 output patches"):
             assert number in text, number
-        assert "Group attention" in text and "Temporal attention" in text
+        assert "Group attention" in text and "Time attention" in text
         assert DEFAULT_TITLE in text
     finally:
         plt.close(fig)

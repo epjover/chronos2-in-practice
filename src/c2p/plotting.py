@@ -28,6 +28,7 @@ import re
 from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
@@ -41,10 +42,12 @@ from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
 from matplotlib.legend import Legend
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.rcsetup import cycler
+from matplotlib.textpath import TextPath
 from matplotlib.ticker import Formatter, NullLocator
 from pandas.tseries.frequencies import to_offset
 from pandas.tseries.offsets import BaseOffset
@@ -71,8 +74,10 @@ __all__ = [
     "plot_metric_vs_param",
     "plot_scenarios",
     "save_figure",
+    "set_axes_title",
     "set_style",
     "style_context",
+    "wrap_to_width",
 ]
 
 # --- Colours ------------------------------------------------------------------------------
@@ -475,6 +480,63 @@ def _format_time_axis(ax: Axes) -> None:
 _TITLE_GAP_POINTS = 14.0  # between the top of the legend and the title baseline
 
 
+@lru_cache(maxsize=2048)
+def _text_width_inches(text: str, fontsize: float, weight: str, family: tuple[str, ...]) -> float:
+    """Width of one line of ``text`` in inches, measured on the font it will be drawn in.
+
+    ``family`` is the active sans-serif stack and only keys the cache: the generic family is
+    resolved through ``rcParams``, which skips missing fonts without a warning per call.
+    """
+    del family
+    prop = FontProperties(family="sans-serif", weight=weight, size=fontsize)
+    return float(TextPath((0, 0), text, prop=prop).get_extents().width) / 72.0
+
+
+def wrap_to_width(text: str, width_inches: float, *, fontsize: float, weight: str = "bold") -> str:
+    """Break ``text`` on spaces into lines no wider than ``width_inches``.
+
+    A title wider than its plot makes ``bbox_inches="tight"`` grow the canvas to the right of
+    the axes, which leaves the chart off-centre in the saved file. Wrapping keeps the width of
+    the figure set by the plot. Existing line breaks are kept; a single word wider than the
+    limit stays on its own line.
+    """
+    family = tuple(mpl.rcParams["font.sans-serif"])
+    lines: list[str] = []
+    for paragraph in text.split("\n"):
+        current = ""
+        for word in paragraph.split():
+            candidate = f"{current} {word}" if current else word
+            if current and _text_width_inches(candidate, fontsize, weight, family) > width_inches:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        lines.append(current)
+    return "\n".join(lines)
+
+
+def _points(size: float | str) -> float:
+    """A font size from ``rcParams`` (a number or a name such as 'large') in points."""
+    return float(FontProperties(size=size).get_size_in_points())
+
+
+def set_axes_title(ax: Axes, title: str, *, pad: float | None = None) -> None:
+    """Left-aligned axes title, wrapped so it is never wider than the axes."""
+    fig = ax.get_figure(root=True)
+    fig.draw_without_rendering()  # the axes' final width under constrained layout
+    width = ax.get_window_extent().width / fig.dpi
+    wrapped = wrap_to_width(
+        title,
+        width,
+        fontsize=_points(mpl.rcParams["axes.titlesize"]),
+        weight=str(mpl.rcParams["axes.titleweight"]),
+    )
+    if pad is None:
+        ax.set_title(wrapped, loc="left", color=INK_PRIMARY)
+    else:
+        ax.set_title(wrapped, loc="left", color=INK_PRIMARY, pad=pad)
+
+
 def _legend_above(
     ax: Axes, handles: Sequence[Artist], labels: Sequence[str], title: str | None
 ) -> None:
@@ -486,7 +548,7 @@ def _legend_above(
     legend = _fit_legend_above(ax, handles, labels)
     if title is not None:
         height = legend.get_window_extent().height * 72 / ax.get_figure(root=True).dpi
-        ax.set_title(title, loc="left", pad=height + _TITLE_GAP_POINTS, color=INK_PRIMARY)
+        set_axes_title(ax, title, pad=height + _TITLE_GAP_POINTS)
 
 
 def _fit_legend_above(ax: Axes, handles: Sequence[Artist], labels: Sequence[str]) -> Legend:
@@ -538,6 +600,13 @@ def _figure_header(
     The title is the legend's own title: constrained layout reserves the top margin for the
     larger of a suptitle and an outside legend, not their sum, so separate artists overlap.
     """
+    if title is not None:
+        title = wrap_to_width(
+            title,
+            0.98 * fig.get_figwidth(),
+            fontsize=_points(STYLE["figure.titlesize"]),
+            weight=str(STYLE["figure.titleweight"]),
+        )
     if not handles:
         if title is not None:
             fig.suptitle(title, x=0.0, ha="left", color=INK_PRIMARY)
@@ -1069,7 +1138,12 @@ def _check_benchmarks(df: pd.DataFrame, value: str, highlight: str | None) -> No
 
 
 def _draw_benchmark_panel(
-    ax: Axes, rows: pd.DataFrame, value: str, highlight: str | None, label_offset: float
+    ax: Axes,
+    rows: pd.DataFrame,
+    value: str,
+    highlight: str | None,
+    label_offset: float,
+    value_format: str,
 ) -> None:
     rows = rows.sort_values(value)  # largest at the top
     positions = np.arange(len(rows))
@@ -1077,12 +1151,14 @@ def _draw_benchmark_panel(
     values = rows[value].to_numpy(dtype="float64")
     ax.barh(positions, values, height=0.62, color=np.where(is_highlight, BLUE, NEUTRAL_BAR))
     for y, v, strong in zip(positions, values, is_highlight, strict=True):
+        # A negative bar is labelled on the free side of the zero line: to its left the label
+        # would run into the model names.
         ax.text(
-            v + (label_offset if v >= 0 else -label_offset),
+            max(v, 0.0) + label_offset,
             y,
-            f"{v:.1f}",
+            value_format.format(v),
             va="center",
-            ha="left" if v >= 0 else "right",
+            ha="left",
             fontsize=9.5,
             color=INK_PRIMARY if strong else INK_SECONDARY,
             fontweight="bold" if strong else "normal",
@@ -1105,16 +1181,30 @@ def plot_benchmarks(
     ncols: int | None = None,
     xlabel: str = "Skill score vs Seasonal Naive (%), higher is better",
     title: str | None = None,
+    value_format: str = "{:.1f}",
+    panel_width: float = 3.2,
 ) -> Figure:
     """Horizontal bars per benchmark (small multiples), one model highlighted in blue.
 
     ``df`` is long: one row per (``model``, ``benchmark``) with the score in ``value``, as in
     ``data/reference/paper_benchmarks.csv``. Panels follow the order of first appearance of
-    each benchmark; bars are sorted within each panel and labelled at the tip.
+    each benchmark; bars are sorted within each panel and labelled at the tip with
+    ``value_format`` (one decimal by default, which suits percentages; pass e.g.
+    ``"{:+.4f}"`` for values of the order of 0.001, which would all print as 0.0).
+    ``panel_width`` is the width of one panel in inches; widen it for a single-panel figure,
+    whose title would otherwise wrap into several lines.
     """
     _check_benchmarks(df, value, highlight)
+    try:
+        value_format.format(0.0)
+    except (IndexError, KeyError, ValueError) as error:
+        raise ValueError(
+            f"value_format={value_format!r} is not a format string for one number."
+        ) from error
     if ncols is not None and ncols <= 0:
         raise ValueError(f"ncols must be positive or None, got {ncols}.")
+    if panel_width <= 0:
+        raise ValueError(f"panel_width must be positive, got {panel_width}.")
     benchmarks = list(pd.unique(df["benchmark"]))
     ncols = ncols if ncols is not None else min(3, len(benchmarks))
     nrows = math.ceil(len(benchmarks) / ncols)
@@ -1126,14 +1216,16 @@ def plot_benchmarks(
         fig, axes = plt.subplots(
             nrows,
             ncols,
-            figsize=(3.2 * ncols, (0.34 * n_models + 0.5) * nrows + 0.9),
+            figsize=(panel_width * ncols, (0.34 * n_models + 0.5) * nrows + 0.9),
             sharex=True,
             squeeze=False,
             layout="constrained",
         )
         for ax, benchmark in zip(axes.flat, benchmarks, strict=False):
             rows = df.loc[df["benchmark"] == benchmark]
-            _draw_benchmark_panel(ax, rows, value, highlight, label_offset=0.02 * span)
+            _draw_benchmark_panel(
+                ax, rows, value, highlight, label_offset=0.02 * span, value_format=value_format
+            )
             ax.set_title(benchmark, loc="left", fontsize=10.5)
         _hide_unused_axes(axes, len(benchmarks))
         # Room for the value labels beyond the longest bar on each side of zero.
@@ -1211,5 +1303,5 @@ def plot_metric_vs_param(
         if len(handles) >= 2:
             _legend_above(ax, handles, names, title)
         elif title is not None:
-            ax.set_title(title, loc="left")
+            set_axes_title(ax, title)
     return ax

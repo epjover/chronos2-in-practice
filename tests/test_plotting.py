@@ -679,6 +679,101 @@ def test_plot_benchmarks_grid_layout_and_no_highlight() -> None:
     assert colors == {plotting.NEUTRAL_BAR}
 
 
+def test_plot_benchmarks_value_format_labels_small_values() -> None:
+    """Values of the order of 0.001 need more than the default one decimal on the bar tips."""
+    df = pd.DataFrame(
+        {
+            "model": ["calendar", "wind forecast"],
+            "benchmark": ["Shapley value"] * 2,
+            "score": [0.0018, -0.0001],
+        }
+    )
+    fig = plotting.plot_benchmarks(df, value="score", highlight=None, value_format="{:+.4f}")
+    try:
+        labels = {text.get_text() for ax in fig.axes for text in ax.texts}
+        assert labels == {"+0.0018", "-0.0001"}
+    finally:
+        plt.close(fig)
+    with pytest.raises(ValueError, match="value_format"):
+        plotting.plot_benchmarks(df, value="score", highlight=None, value_format="{:.1f} {}")
+    with pytest.raises(ValueError, match="panel_width"):
+        plotting.plot_benchmarks(df, value="score", highlight=None, panel_width=0)
+
+
+def test_plot_benchmarks_labels_negative_bars_right_of_zero() -> None:
+    """A label left of a negative bar would overlap the model names on the y axis."""
+    df = pd.DataFrame({"model": ["a", "b"], "benchmark": ["only"] * 2, "score": [0.0018, -0.0001]})
+    fig = plotting.plot_benchmarks(df, value="score", highlight=None, panel_width=6.0)
+    try:
+        assert fig.get_figwidth() == pytest.approx(6.0)
+        (ax,) = fig.axes
+        assert all(text.get_position()[0] > 0 and text.get_ha() == "left" for text in ax.texts)
+    finally:
+        plt.close(fig)
+
+
+# --- Titles never wider than the plot -----------------------------------------------------
+
+LONG_TITLE = (
+    "A deliberately long title that states the finding in full, with its number and its "
+    "interval, and would otherwise push the canvas far to the right of the axes"
+)
+
+
+def title_overhang(ax: Axes) -> float:
+    """Pixels by which the axes title sticks out to the right of the axes."""
+    fig = ax.get_figure(root=True)
+    fig.draw_without_rendering()
+    title = ax._left_title  # the left-aligned title set by the plotting helpers
+    return title.get_window_extent().x1 - ax.get_window_extent().x1
+
+
+def test_wrap_to_width_breaks_on_spaces_and_keeps_every_word() -> None:
+    with plotting.style_context():
+        wrapped = plotting.wrap_to_width(LONG_TITLE, 4.0, fontsize=11.0)
+        assert "\n" in wrapped
+        assert wrapped.replace("\n", " ") == LONG_TITLE
+        assert plotting.wrap_to_width("short", 4.0, fontsize=11.0) == "short"
+        # An explicit line break is kept, and one word wider than the limit is not split.
+        assert plotting.wrap_to_width("one\ntwo", 4.0, fontsize=11.0) == "one\ntwo"
+        assert plotting.wrap_to_width("Supercalifragilistic", 0.2, fontsize=11.0) == (
+            "Supercalifragilistic"
+        )
+
+
+def test_long_titles_are_wrapped_to_the_axes_width() -> None:
+    """With and without a legend, the title must not make the saved figure wider."""
+    two = plotting.plot_metric_vs_param(
+        metric_frame(["chronos-2", "seasonal_naive"]),
+        x="context_length",
+        y="WQL",
+        hue="model",
+        title=LONG_TITLE,
+    )
+    one = plotting.plot_metric_vs_param(
+        metric_frame(["chronos-2"]), x="context_length", y="WQL", hue="model", title=LONG_TITLE
+    )
+    try:
+        for ax in (two, one):
+            assert "\n" in ax.get_title(loc="left")
+            assert title_overhang(ax) <= 1.0
+    finally:
+        plt.close(two.figure)
+        plt.close(one.figure)
+
+
+def test_long_figure_titles_are_wrapped_to_the_figure_width() -> None:
+    df = pd.read_csv(BENCHMARKS_CSV)
+    fig = plotting.plot_benchmarks(df[df["benchmark"] == df["benchmark"].iloc[0]], title=LONG_TITLE)
+    try:
+        fig.draw_without_rendering()
+        title = fig._suptitle
+        assert "\n" in title.get_text()
+        assert title.get_window_extent().x1 <= fig.bbox.x1 + 1.0
+    finally:
+        plt.close(fig)
+
+
 # --- plot_metric_vs_param -----------------------------------------------------------------
 
 

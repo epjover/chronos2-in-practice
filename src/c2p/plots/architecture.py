@@ -179,7 +179,7 @@ def _stages(sizes: Chronos2Sizes) -> list[Stage]:
             "Every block runs both kinds of attention, one after the other:",
             sub=(
                 (
-                    "Temporal attention",
+                    "Time attention",
                     "across the patches of one series, positions encoded with RoPE",
                 ),
                 (

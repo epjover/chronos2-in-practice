@@ -15,22 +15,26 @@ Protocol, chosen so that nothing here could have seen 2018:
 3. **Look by month**, because a yearly coverage of 80% can still be 60% every January.
 
 Outputs under ``results/``: ``09_conformal_adjustments.csv`` (the learned deltas),
-``09_conformal_metrics.csv`` (per window), ``09_conformal_summary.csv``,
-``09_conformal_by_month.csv`` and ``figures/09_conformal_coverage.png``.
+``09_conformal_metrics.csv`` (per window), ``09_conformal_summary.csv`` (per model, including
+the mean WQL over the worst tenth of the zero-shot windows), ``09_conformal_by_month.csv`` and
+``figures/09_conformal_coverage.png``.
 
 Usage::
 
     uv run python monitoring/calibrate_intervals.py          # ~2 min on a GPU
     C2P_FAST_MODE=1 uv run python monitoring/calibrate_intervals.py
+    uv run python monitoring/calibrate_intervals.py --from-results   # no model: rebuild the
+                                                                     # summary and the figure
 """
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import replace
 
 import pandas as pd
 
-from c2p.config import get_device, get_paths, is_fast_mode, set_seed
+from c2p.config import Paths, get_device, get_paths, is_fast_mode, set_seed
 from c2p.conformal import ConformalForecaster, calibrate, coverage_by_period
 from c2p.data import spain_energy_frame, validate_and_prepare
 from c2p.eval import MODEL_COL, backtest, evaluate, skill_table
@@ -38,19 +42,78 @@ from c2p.experiments import FREQ, LOAD, VALIDATION_END, day_ahead_config
 from c2p.models import Chronos2Forecaster, load_chronos2
 from c2p.plots.production import plot_coverage_by_month
 from c2p.plotting import save_figure, set_style
-from c2p.results import save_results
+from c2p.results import load_results, save_results
 from c2p.schema import ID_COL, TIMESTAMP_COL
 
 CONTEXT = 2048
 CALIBRATION_WINDOWS = 184  # daily cutoffs from 2017-06-30 22:00 to 2017-12-30 22:00
 
 
-def main() -> int:
+WORST_SHARE = 0.10  # the tail of zero-shot windows a reserve-margin decision cares about
+FIGURE_TITLE = "80% band by month of 2018: zero-shot against conformal calibration on 2017-H2"
+
+
+def summarise(metrics: pd.DataFrame, *, baseline: str = "zero-shot") -> pd.DataFrame:
+    """One row per model: means, skill against ``baseline`` and the WQL of the worst windows.
+
+    ``WQL_worst_decile`` is the mean WQL over the windows in which the *baseline* scored at or
+    above its 90th percentile, the same windows for every model, so the column says what the
+    calibration does on the days the zero-shot bands failed most.
+    """
+    summary = (
+        metrics.groupby(MODEL_COL)
+        .agg(
+            WQL=("WQL", "mean"),
+            MASE=("MASE", "mean"),
+            coverage_80=("coverage_80", "mean"),
+            coverage_98=("coverage_98", "mean"),
+            n_windows=("WQL", "size"),
+        )
+        .reset_index()
+    )
+    skill = skill_table(metrics, baseline=baseline, metric="WQL")
+    summary = summary.merge(
+        skill[[MODEL_COL, "skill", "ci_low", "ci_high", "win_rate"]], on=MODEL_COL
+    )
+    reference = metrics.loc[metrics[MODEL_COL] == baseline].set_index("cutoff")["WQL"]
+    worst = reference.index[reference >= reference.quantile(1 - WORST_SHARE)]
+    tail = metrics[metrics["cutoff"].isin(worst)].groupby(MODEL_COL)["WQL"].mean()
+    return summary.assign(WQL_worst_decile=summary[MODEL_COL].map(tail), n_worst_windows=len(worst))
+
+
+def report(metrics: pd.DataFrame, by_month: pd.DataFrame, paths: Paths) -> None:
+    """Write the summary and the coverage figure from per-window metrics and monthly coverage."""
+    summary = summarise(metrics)
+    print("Saved", save_results(summary, "09_conformal_summary", paths).name)
+    worst = by_month.loc[by_month.groupby(MODEL_COL)["coverage"].idxmin()]
+    ax = plot_coverage_by_month(by_month, title=FIGURE_TITLE)
+    (figure_path,) = save_figure(ax.figure, "09_conformal_coverage", paths.figures)
+    print(f"Saved {figure_path}")
+    print("\n" + summary.round(4).to_string(index=False))
+    print("\nWorst month per model (80% band):")
+    print(worst[[MODEL_COL, "period", "coverage"]].round(3).to_string(index=False))
+
+
+def main(argv: list[str] | None = None) -> int:
     """Calibrate on 2017-H2, re-score 2018 with both variants and write the comparison."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--from-results",
+        action="store_true",
+        help="rebuild the summary and the figure from the saved CSVs, without running the model",
+    )
+    args = parser.parse_args(argv)
     set_seed()
     set_style()
     fast = is_fast_mode(default=False)
     paths = get_paths(fast_mode=fast)
+    if args.from_results:
+        report(
+            load_results("09_conformal_metrics", paths),
+            load_results("09_conformal_by_month", paths),
+            paths,
+        )
+        return 0
     raw = spain_energy_frame()[[ID_COL, TIMESTAMP_COL, LOAD]]
     series, _ = validate_and_prepare(raw, freq=FREQ, target=LOAD)
     test_config = day_ahead_config(fast, max_context=CONTEXT)
@@ -98,23 +161,6 @@ def main() -> int:
     metrics = pd.concat(metrics, ignore_index=True)
     print("Saved", save_results(metrics, "09_conformal_metrics", paths).name)
 
-    summary = (
-        metrics.groupby(MODEL_COL)
-        .agg(
-            WQL=("WQL", "mean"),
-            MASE=("MASE", "mean"),
-            coverage_80=("coverage_80", "mean"),
-            coverage_98=("coverage_98", "mean"),
-            n_windows=("WQL", "size"),
-        )
-        .reset_index()
-    )
-    skill = skill_table(metrics, baseline="zero-shot", metric="WQL")
-    summary = summary.merge(
-        skill[[MODEL_COL, "skill", "ci_low", "ci_high", "win_rate"]], on=MODEL_COL
-    )
-    print("Saved", save_results(summary, "09_conformal_summary", paths).name)
-
     # 3. By month: the diagnostic the yearly number hides.
     all_forecasts = pd.concat(forecasts, ignore_index=True)
     by_month = coverage_by_period(all_forecasts, lower=0.1, upper=0.9, period="M")
@@ -122,20 +168,7 @@ def main() -> int:
     # that is otherwise not in the test year. A month needs at least a week of hours to count.
     by_month = by_month[by_month["n"] >= 24 * 7].reset_index(drop=True)
     print("Saved", save_results(by_month, "09_conformal_by_month", paths).name)
-    worst = by_month.loc[by_month.groupby(MODEL_COL)["coverage"].idxmin()]
-    ax = plot_coverage_by_month(
-        by_month,
-        title=(
-            "80% band, coverage by month of 2018: zero-shot against conformal calibration "
-            "on 2017-H2"
-        ),
-    )
-    (figure_path,) = save_figure(ax.figure, "09_conformal_coverage", paths.figures)
-    print(f"Saved {figure_path}")
-
-    print("\n" + summary.round(4).to_string(index=False))
-    print("\nWorst month per model (80% band):")
-    print(worst[[MODEL_COL, "period", "coverage"]].round(3).to_string(index=False))
+    report(metrics, by_month, paths)
     return 0
 
 

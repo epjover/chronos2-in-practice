@@ -8,7 +8,11 @@ Markdown table pasted into it collapses into one line per cell. This script keep
   figure style (same fonts and inks as ``results/figures``), with bold cells, code cells and
   column alignment preserved and long cells wrapped.
 - ``articles/medium/<article>.md``: the article with each table replaced by the image and a
-  caption ("Table k. <column headers>"), ready to paste or import.
+  caption ("Table k. <column headers>"), ready to paste or import. In this copy every relative
+  link to a file of the repository becomes a GitHub URL (a relative link means nothing on
+  Medium), and each ``[Part N](#)`` cross-reference takes the address of that part from
+  ``articles/medium_urls.json`` once it has one. Figures keep their relative path: they are
+  uploaded to Medium by hand.
 
 Run it after editing an article; the images are regenerated from scratch each time.
 
@@ -21,9 +25,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
+import posixpath
 import re
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +38,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from c2p.config import find_repo_root
+from c2p.config import GITHUB_REPO, find_repo_root
 from c2p.plotting import GRID_COLOR, INK_PRIMARY, INK_SECONDARY, style_context
 
 TABLE_RE = re.compile(r"(?m)^(\|[^\n]*\|)\n(\|[ :\-|]+\|)\n((?:\|[^\n]*\|\n?)+)")
@@ -40,6 +46,10 @@ MONO_FONT = "DejaVu Sans Mono"
 WRAP_AT = 42  # characters per line inside a cell before wrapping
 MAX_WIDTH_IN = 9.0  # inches; Medium renders images up to about 1,400 px wide
 DPI = 200
+REPO_URL = f"https://github.com/{GITHUB_REPO}"
+PART_URLS_FILE = "medium_urls.json"  # under articles/: {"1": "https://medium.com/...", ...}
+RELATIVE_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\((\.\./[^)#\s]*)\)")
+PART_LINK_RE = re.compile(r"\[Part (\d)\]\(#\)")
 
 
 @dataclass(frozen=True)
@@ -162,9 +172,62 @@ def render_table(header: list[Cell], rows: list[list[Cell]], aligns: list[str], 
     return path
 
 
-def convert_article(source: Path, out_dir: Path) -> tuple[Path, int]:
-    """Write the Medium copy of ``source`` with its tables as images; return (path, n_tables)."""
+def absolute_links(text: str, root: Path) -> str:
+    """Point every relative, non-image link of an article at the file on GitHub.
+
+    Links are resolved from ``articles/``; a directory becomes a ``tree`` URL and a file a
+    ``blob`` URL. Image links are left alone.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        path = posixpath.normpath(posixpath.join("articles", match.group(2)))
+        kind = "tree" if (root / path).is_dir() else "blob"
+        return f"[{match.group(1)}]({REPO_URL}/{kind}/main/{path})"
+
+    return RELATIVE_LINK_RE.sub(replace, text)
+
+
+def load_part_urls(root: Path) -> dict[str, str]:
+    """Published address of each part, from ``articles/medium_urls.json`` (empty if not yet)."""
+    path = root / "articles" / PART_URLS_FILE
+    if not path.is_file():
+        return {}
+    urls = json.loads(path.read_text(encoding="utf-8"))
+    bad = {part: url for part, url in urls.items() if url and not url.startswith("https://")}
+    if bad:
+        raise ValueError(f"{path.name}: addresses must start with https://, got {bad}.")
+    return {str(part): url for part, url in urls.items() if url}
+
+
+def link_parts(text: str, urls: Mapping[str, str]) -> tuple[str, list[str]]:
+    """Fill ``[Part N](#)`` from ``urls``; return the text and the parts that have no address."""
+    pending: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        part = match.group(1)
+        if part in urls:
+            return f"[Part {part}]({urls[part]})"
+        pending.append(part)
+        return match.group(0)
+
+    return PART_LINK_RE.sub(replace, text), pending
+
+
+def convert_article(
+    source: Path,
+    out_dir: Path,
+    *,
+    root: Path | None = None,
+    part_urls: Mapping[str, str] | None = None,
+) -> tuple[Path, int]:
+    """Write the Medium copy of ``source`` with its tables as images; return (path, n_tables).
+
+    ``root`` is the repository root used to tell directories from files when links are made
+    absolute (default: two levels above ``out_dir``). ``part_urls`` fills the ``[Part N](#)``
+    cross-references; parts without an address keep the placeholder.
+    """
     text = source.read_text(encoding="utf-8")
+    root = root if root is not None else out_dir.parents[1]
     stem = source.stem[:2]
     tables_dir = out_dir / "tables"
     counter = 0
@@ -190,10 +253,10 @@ def convert_article(source: Path, out_dir: Path) -> tuple[Path, int]:
         return f"![Table {counter}: articles/medium/{rel}]({rel})\n\n{caption}\n"
 
     converted = TABLE_RE.sub(replace, text)
+    converted = absolute_links(converted, root)
+    converted, _ = link_parts(converted, part_urls or {})
     # Figures live in results/figures; from articles/medium that is one level deeper.
-    converted = converted.replace("](../results/figures/", "](../../results/figures/")
-    converted = converted.replace("](../results)", "](../../results)")
-    converted = converted.replace("](../results/", "](../../results/")
+    converted = re.sub(r"(!\[[^\]]*\]\()\.\./", r"\1../../", converted)
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / source.name
     target.write_text(converted, encoding="utf-8")
@@ -212,12 +275,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not articles:
         raise SystemExit("No articles found.")
     out_dir = root / "articles" / "medium"
+    part_urls = load_part_urls(root)
     total = 0
+    pending: dict[str, list[str]] = {}
     for article in articles:
-        target, n = convert_article(article, out_dir)
+        target, n = convert_article(article, out_dir, root=root, part_urls=part_urls)
         total += n
         print(f"{article.name}: {n} tables -> {target.relative_to(root)}")
+        _, missing = link_parts(article.read_text(encoding="utf-8"), part_urls)
+        if missing:
+            pending[article.name[:2]] = missing
     print(f"{total} tables rendered to {out_dir.relative_to(root) / 'tables'}")
+    for article, parts in pending.items():
+        print(
+            f"Part {article[1]}: link to Part {', '.join(parts)} still points to '#'; add its "
+            f"address to articles/{PART_URLS_FILE} once it is published."
+        )
     return 0
 
 

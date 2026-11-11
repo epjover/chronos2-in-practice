@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "render_article_tables.py"
 
 
@@ -73,9 +75,41 @@ def test_convert_article_replaces_tables_with_images(tmp_path: Path) -> None:
     assert "![Table 1: articles/medium/tables/07_table_1.png](tables/07_table_1.png)" in text
     assert "*Table 1. Columns: Model, WQL, Skill vs naive.*" in text
     assert "![Table 2: articles/medium/tables/07_table_2.png](tables/07_table_2.png)" in text
-    # figure links are re-rooted one level deeper
+    # figures keep a relative path, one level deeper; other links go to GitHub
     assert "](../../results/figures/01_fan_chart.png)" in text
-    assert "](../../results/figures/x.png)" in text
+    assert f"[link]({rat.REPO_URL}/blob/main/results/figures/x.png)" in text
     for k in (1, 2):
         image = out_dir / "tables" / f"07_table_{k}.png"
         assert image.is_file() and image.stat().st_size > 5_000
+
+
+def test_absolute_links_tell_directories_from_files(tmp_path: Path) -> None:
+    (tmp_path / "bench").mkdir()
+    text = (
+        "See [`bench/`](../bench/), [the script](../scripts/cost_table.py) and "
+        "![Figure 1: x](../results/figures/x.png). [Elsewhere](https://example.org) stays."
+    )
+    converted = rat.absolute_links(text, tmp_path)
+    assert f"[`bench/`]({rat.REPO_URL}/tree/main/bench)" in converted
+    assert f"[the script]({rat.REPO_URL}/blob/main/scripts/cost_table.py)" in converted
+    assert "![Figure 1: x](../results/figures/x.png)" in converted
+    assert "[Elsewhere](https://example.org)" in converted
+
+
+def test_link_parts_fills_published_parts_and_reports_the_rest() -> None:
+    text = "[Part 1](#) set it up and [Part 2](#) measured it."
+    filled, pending = rat.link_parts(text, {"1": "https://medium.com/@someone/part-1"})
+    assert filled.startswith("[Part 1](https://medium.com/@someone/part-1) set it up")
+    assert filled.endswith("[Part 2](#) measured it.")
+    assert pending == ["2"]
+
+
+def test_load_part_urls_ignores_empty_and_rejects_non_https(tmp_path: Path) -> None:
+    articles = tmp_path / "articles"
+    articles.mkdir()
+    assert rat.load_part_urls(tmp_path) == {}
+    (articles / rat.PART_URLS_FILE).write_text('{"1": "https://medium.com/p/1", "2": ""}')
+    assert rat.load_part_urls(tmp_path) == {"1": "https://medium.com/p/1"}
+    (articles / rat.PART_URLS_FILE).write_text('{"1": "medium.com/p/1"}')
+    with pytest.raises(ValueError, match="https://"):
+        rat.load_part_urls(tmp_path)

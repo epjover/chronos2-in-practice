@@ -46,6 +46,17 @@ required argument. The same checks run in the fast test suite:
 uv run python scripts/audit_articles.py
 ```
 
+Two more things happen in the Medium copies. Relative links to files of this repository become
+GitHub URLs, and each `[Part N](#)` cross-reference takes the address of that part from
+[`articles/medium_urls.json`](articles/medium_urls.json): fill in the address when a part is
+published and render again. Before publishing, `scripts/check_links.py` requests every link of
+the drafts once and lists the ones that do not answer (repository links are checked against
+the working tree, DOIs at the resolver):
+
+```bash
+uv run python scripts/check_links.py
+```
+
 ## Quickstart (uv)
 
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
@@ -179,6 +190,7 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── set_repo_url.py     # sets the GitHub owner/name used in links
 │   ├── render_article_tables.py  # article tables -> PNG + Medium-ready copies
 │   ├── audit_articles.py   # article tables and code blocks checked against results/ and c2p
+│   ├── check_links.py      # requests every link of the drafts once and reports the broken ones
 │   ├── fetch_cloud_prices.py  # AWS Price List API -> data/reference/cloud_prices.csv
 │   └── cost_table.py       # joins measured throughput with published rates
 ├── tests/                  # pytest suite

@@ -415,6 +415,11 @@ def article_5(r: Results) -> Iterator[str]:
         f"against {half_up(tail['zero-shot'], 3)}"
     )
     yield f"| 3.3× faster, {spct(k['skill'])}% |"
+    offer = pd.read_csv(r.folder.parent / "data" / "reference" / "cloud_prices.csv").iloc[0]
+    yield (
+        f"offer version {offer['offer_version']} for us-east-1, "
+        f"with rates effective {str(offer['effective_date'])[:10]}"
+    )
 
 
 EXPECTED: dict[str, Callable[[Results], Iterator[str]]] = {

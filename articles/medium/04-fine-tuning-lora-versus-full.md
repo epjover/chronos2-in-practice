@@ -1,4 +1,4 @@
-# Chronos-2 in Practice (4/5): Fine-Tuning, LoRA Against Full, and What It Actually Buys
+# Chronos-2 in Practice (4/5): Fine-Tuning, LoRA Against Full, and What It Buys
 
 **Five minutes on a consumer GPU and a 4.6 MB adapter bought 2.3% over zero-shot. Training all
 119 million weights bought 1.7%, took a 456 MB checkpoint, and started forgetting. Both numbers
@@ -7,18 +7,7 @@ are smaller than the covariates in Part 3.**
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
 > Draft for Medium. Every number is read from a CSV in [`results/`](../../results); each figure
-> names the file to upload. Published open access (not metered). Still to decide: repository URL.
-
----
-
-- **Code:** [`07_finetune_lora`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/07_finetune_lora.ipynb),
-  [`08_finetune_full`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/08_finetune_full.ipynb):
-  both need a GPU (local, or Colab's T4).
-- **Data:** hourly Spanish electricity, 2015–2018 (CC0): 26 series for training, load for the
-  test, five cities' temperatures for the out-of-domain check.
-- **Versions:** `chronos-forecasting==2.3.2`, `peft==0.21.2`, Python 3.11.
-- **Hardware:** RTX 3070 (8 GB) for every training time, VRAM figure and latency below; Intel
-  Core i9-12900K on the host.
+> names the file to upload. Published open access (not metered).
 
 ---
 
@@ -31,13 +20,22 @@ The answer on this dataset is *a little, and less than you would guess*. What ma
 headline number is that the experiment takes five minutes and costs nothing, so there is no reason
 to argue about it when you can measure it instead. For a tour of the fine-tuning *options* the
 library offers (target-only, covariate-informed, full and LoRA, with and without validation), Guo's
-article on Towards Data Science [7] is the reference; this part takes one of those options through
+article on Towards Data Science (2026) is the reference; this part takes one of those options through
 the full 365-window backtest, with the bracket, the coverage and the out-of-domain check.
 
-Everything below comes from [`07_finetune_lora.ipynb`](../notebooks/07_finetune_lora.ipynb) and
-[`08_finetune_full.ipynb`](../notebooks/08_finetune_full.ipynb), run on an RTX 3070 (8 GB). The test
-set is the same 365 day-ahead windows of 2018 that Part 2 established, so every number here lines
+The test set is the same 365 day-ahead windows of 2018 that Part 2 established, so every number here lines
 up directly with every number there.
+
+- **Code:** [`07_finetune_lora`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/07_finetune_lora.ipynb),
+  [`08_finetune_full`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/08_finetune_full.ipynb):
+  both need a GPU (local, or Colab's T4).
+- **Data:** hourly Spanish electricity, 2015–2018 (CC0): 26 series for training, load for the
+  test, five cities' temperatures for the out-of-domain check.
+- **Versions:** `chronos-forecasting==2.3.2`, `peft==0.21.2`, Python 3.11.
+- **Hardware:** RTX 3070 (8 GB) for every training time, VRAM figure and latency below; Intel
+  Core i9-12900K on the host.
+
+---
 
 ## 1. A split that cannot leak, and training data that is not one series
 
@@ -49,7 +47,7 @@ with three periods in time order:
 
 *Table 1. Columns: Period, Span (UTC), Size, Used for.*
 
-One detail matters more than it first appears. The validation set doesn't get handed over as one
+One detail carries more weight than it first appears to. The validation set doesn't get handed over as one
 long series. `window_series` splits it into forecast windows and turns each window into its own
 series, with context drawn only from earlier data:
 
@@ -75,9 +73,9 @@ Spanish table becomes its own univariate series with `to_univariate_series`: loa
 own forecasts and generation by source, **26 series in all**. The fine-tune then means "learn
 Spanish electricity", not "learn this one series".
 
-## 2. LoRA, and the three numbers that decide whether it is worth it
+## 2. LoRA, and the three numbers that decide whether it pays
 
-Low-Rank Adaptation [1] keeps the pretrained weights frozen and instead trains a small pair of
+Low-Rank Adaptation (Hu et al., 2021) keeps the pretrained weights frozen and instead trains a small pair of
 matrices alongside each adapted layer. Here, the adapted layers are Chronos-2's own defaults:
 
 ```python
@@ -97,6 +95,8 @@ from the T5 architecture, and its guess adapts fewer layers than Chronos-2 does.
 One run, at rank 8:
 
 ```python
+from pathlib import Path
+
 from c2p.finetune import finetune, lora_config
 from c2p.models import load_chronos2
 
@@ -110,6 +110,7 @@ result = finetune(
     learning_rate=1e-5,
     batch_size=32,
     context_length=2048,
+    output_dir=Path("models/lora_r8"),
     lora_config=lora_config(r=8),  # lora_alpha defaults to 2*r
     early_stopping_patience=3,
     eval_steps=100,
@@ -137,7 +138,7 @@ steps each on an RTX 3070:
 
 ![Table 2: articles/medium/tables/04_table_2.png](tables/04_table_2.png)
 
-*Table 2. Columns: run, trainable params, share of model, train time, peak VRAM, adapter on disk, best eval loss.*
+*Table 2. Columns: Run, Trainable params, Share of model, Train time, Peak VRAM, Adapter on disk, Best eval loss.*
 
 Even before any accuracy number appears, this table tells a clear story. Training time stays
 *identical* across ranks, because the backward pass is dominated by the frozen model rather than the
@@ -151,7 +152,8 @@ for later.
 ## 3. Does it help? Yes, by about two percent
 
 This is the same backtest as in Part 2: 365 daily cutoffs through 2018, a 24-hour horizon, 2,048
-hours of context, and 11 quantiles.
+hours of context, and 11 quantile levels (the nine deciles that WQL scores, plus 0.01 and 0.99 for
+the 98% band).
 
 ![Figure 1: results/figures/07_lora_skill.png](../../results/figures/07_lora_skill.png)
 
@@ -161,7 +163,7 @@ intervals overlap each other completely.*
 
 ![Table 3: articles/medium/tables/04_table_3.png](tables/04_table_3.png)
 
-*Table 3. Columns: model, mean WQL, MASE, WAPE, skill vs zero-shot [95% CI], windows won.*
+*Table 3. Columns: Model, WQL, MASE, WAPE, Skill vs zero-shot [95% CI], Wins.*
 
 Skill here follows fev-bench's definition, the one Part 2 adopted. It takes one minus the geometric
 mean of the per-window error ratios, with a bootstrap interval worked out over the 365 windows. That
@@ -170,7 +172,7 @@ ranking by mean WQL can disagree slightly.
 
 Look at the intervals before you look at the point estimates. The best point estimate is rank 8 at
 +2.3%, but its interval includes zero. The only arm whose interval excludes zero is **rank 4** at
-+1.9% [+0.5, +3.1], and that is the *smallest* adapter, the one with the worst validation loss. Rank
++1.8% [+0.5, +3.1], and that is the *smallest* adapter, the one with the worst validation loss. Rank
 16 has the best validation loss but the widest, least convincing test interval. And Part 2's reading
 rule still applies in full: one interval clearing zero among three that don't is the kind of pattern
 chance throws up across many comparisons. So the defensible summary isn't that rank 4 works and the
@@ -205,10 +207,12 @@ full = finetune(
     train_inputs,
     val_inputs=val_inputs,
     mode="full",
+    prediction_length=24,
     learning_rate=1e-6,
     num_steps=1000,
     batch_size=32,
     context_length=2048,
+    output_dir=Path("models/full"),
     early_stopping_patience=3,
     eval_steps=100,
 )
@@ -221,15 +225,17 @@ fine-tuned models are indistinguishable from each other; only their costs differ
 
 ![Table 4: articles/medium/tables/04_table_4.png](tables/04_table_4.png)
 
-*Table 4. Columns: model, mean WQL, skill vs zero-shot [95% CI], train time, peak VRAM, artifact, latency.*
+*Table 4. Columns: Model, WQL, Skill vs zero-shot [95% CI], Train time, Peak VRAM, Artifact, Latency.*
 
 The full fine-tune reaches the best validation loss in this article, 2.9767, compared with 3.0962
 for rank 8, and it also posts the best mean WQL, though only by a margin of 0.0001. Its skill score
-comes out *lower* than rank 8's, and its interval is nearly three times wider. So on this dataset,
+comes out *lower* than rank 8's, and its interval is nearly twice as wide. So on this dataset,
 training 100% of the weights instead of 1% didn't buy anything measurable, and it cost a 456 MB
 checkpoint instead of a 4.6 MB adapter.
 
-Inference latency is identical across all three (37 to 38 ms per window). A LoRA adapter doesn't
+Inference latency is identical across all three, at 37 ms per window. That is the time the backtest
+harness spends on each window, its own checks and frame handling included, which is why it sits
+above the 27 ms that Part 5 measures for a bare `predict_df` call. A LoRA adapter doesn't
 make the served model slower, because the parameter count it adds is a rounding error, and it can be
 merged into the base weights at load time.
 
@@ -247,7 +253,7 @@ Positive is better than zero-shot. LoRA stays level; the full fine-tune drifts d
 
 ![Table 5: articles/medium/tables/04_table_5.png](tables/04_table_5.png)
 
-*Table 5. Columns: model, mean WQL on temperature, MASE, skill vs zero-shot [95% CI], windows won.*
+*Table 5. Columns: Model, WQL on temperature, MASE, Skill vs zero-shot [95% CI], Wins.*
 
 This needs stating carefully, because it is easy to oversell. At 52 windows, neither interval
 excludes zero, so we cannot call this proof of catastrophic forgetting. It shows the direction you
@@ -257,8 +263,8 @@ wins.
 
 The mechanism isn't mysterious. LoRA's frozen base weights put a hard limit on how far the model can
 move, and that limit is what protects behaviour on tasks you never trained for. If you're serving
-one model across many domains, that matters more than 0.6 percentage points of skill on any single
-one of them.
+one model across many domains, that protection outweighs 0.6 percentage points of skill on any
+single one of them.
 
 ## 6. The decision, stated plainly
 
@@ -302,33 +308,7 @@ If you do fine-tune, start with LoRA at rank 4 or 8, use the library's default l
 early on a windowed validation set, and always run the out-of-domain check from section 5 before
 deploying. This sequence takes about ten minutes of GPU time.
 
-## 7. Cheat sheet
-
-Split in time (train, validation, test) before anything else, and cut the validation period into
-forecast windows (`window_series`) so early stopping measures the task.
-
-Start with LoRA, rank 4 or 8, the library's default learning rate, and pass the target modules
-explicitly.
-
-Score the fine-tune on the same backtest as the zero-shot model, read the bracket, and check
-`coverage_80`, since fine-tuning narrows the bands.
-
-Run an out-of-domain check before deploying a full fine-tune.
-
-Expect about two percent on a well-behaved series. If you need more, Part 3's covariates are the
-cheaper lever.
-
-Start with LoRA, rank 4 or 8, the library's default learning rate, and pass the target modules
-explicitly.
-
-If you are already working in AutoGluon, the sweep above collapses into a hyperparameter dict:
-
-Run an out-of-domain check before deploying a full fine-tune.
-
-Expect about two percent on a well-behaved series. If you need more, Part 3's covariates are the
-cheaper lever.
-
-## 8. The same thing in one line
+## 7. The same thing in one line
 
 If you are already working in AutoGluon, the sweep above collapses into a hyperparameter dict:
 
@@ -345,6 +325,14 @@ Pinning `hyperparameters` to `Chronos2` matters because, left alone, AutoGluon f
 the resulting accuracy is no longer attributable to this model. The defaults it would use are the
 ones in section 2, so this is the same experiment with less code around it, and it's also how the
 managed deployment path in Part 5 works.
+
+## Cheat sheet
+
+- Split in time (train, validation, test) before anything else, and cut the validation period into forecast windows (`window_series`) so early stopping measures the task.
+- Start with LoRA, rank 4 or 8, the library's default learning rate, and pass the target modules explicitly.
+- Score the fine-tune on the same backtest as the zero-shot model, read the bracket, and check `coverage_80`, since fine-tuning narrows the bands.
+- Run an out-of-domain check before deploying a full fine-tune.
+- Expect about two percent on a well-behaved series. If you need more, Part 3's covariates are the cheaper lever.
 
 ## What's next
 

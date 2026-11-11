@@ -5,8 +5,7 @@
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
 > Draft. Every number in the text is read from a CSV in [`results/`](../../results); each figure
-> names the file to upload to Medium. Still to decide before publishing: the repository
-> URL (`scripts/set_repo_url.py`). Published open access (not metered); the AI disclosure above
+> names the file to upload to Medium. Published open access (not metered); the AI disclosure above
 > follows [Medium's policy](https://help.medium.com/hc/en-us/articles/22576852947223-Artificial-Intelligence-AI-content-policy).
 
 ---
@@ -14,13 +13,13 @@
 It takes ten lines of Python, no training and no hyperparameters, and a 120-million-parameter model
 reads four years of hourly Spanish electricity demand and returns the next week as a distribution,
 with 21 quantile levels, natively, up to the 1st and 99th percentiles. On a desktop CPU it takes
-about three tenths of a second, and the median forecast lands 811 MW from what actually happened:
+about three tenths of a second, and the median forecast lands 811 MW from what happened:
 2.8% of average demand.
 
 Then you delete 18 rows from the input, not the values but the *rows* themselves, the way a failed
 export or a careless `dropna()` deletes them. You hand the model that, tell it the data is hourly,
 and nothing complains, no error, no warning. Its error more than doubles. Across 20 weekly forecast
-origins, the weighted quantile loss rises by 111% on average, and by 203% in a typical week.
+origins, the weighted quantile loss rises by 111% on average, and by 203% at a typical origin.
 
 This article is about the gap between those two paragraphs. Part 1 of five covers what Chronos-2 is,
 what its benchmark numbers mean and where they turn out thinner than they look, how to get a first
@@ -94,13 +93,13 @@ model is just a different way of assigning group IDs:
 
 *Table 1. Columns: Mode, How the group IDs are assigned.*
 
-Parts 2 and 3 are, quite literally, that table applied twice.
+Parts 2 and 3 are that table applied twice.
 
 It helps to note two more details before the first forecast, because both come back later.
 
 **The model never sees dates.** It gets a *relative* time index, each step's position divided by the
 maximum context length, plus a mask, and nothing else. No month, no day of week, no holiday. It can
-pick up the *periodic* part of the calendar from the series itself (part 3 measures how well), but
+pick up the *periodic* part of the calendar from the series itself (Part 3 measures how well), but
 anything aperiodic, holidays above all, has to come in as a covariate. On the ten national holidays
 of 2018, a single holiday flag cuts the quantile loss by 14%. More immediately, Chronos-2 has no way
 to notice that a row is missing, and that's why section 5 of this article matters.
@@ -217,7 +216,7 @@ extra levels are what let the model handle rare-event questions such as demand p
 
 There is also `autogluon/chronos-2-small`, a 28M checkpoint with the same API. On the week below it
 has 4.3× fewer parameters and predicts 3.3× faster, at the cost of about 40% more WQL. One week
-is not a benchmark, though; over the full year of day-ahead windows in part 5 the gap settles at
+is not a benchmark, though; over the full year of day-ahead windows in Part 5 the gap settles at
 about a quarter more quantile loss, so quote that figure rather than this one.
 
 ## 4. Your first forecast, in ten lines
@@ -225,8 +224,7 @@ about a quarter more quantile loss, so quote that figure rather than this one.
 We forecast Spanish national load (`load_actual`, in MW) 168 hours ahead from a fixed origin: Sunday
 2018-11-11 22:00 UTC, which is 23:00 in Madrid, so the horizon runs from Monday 00:00 to Sunday
 23:00 local time. Rather than trusting that sentence, the notebook checks it against the calendar,
-and confirms that the week contains no national holiday. Holiday weeks are where a calendar
-covariate earns its place, and that comes up in part 3.
+and confirms that the week contains no national holiday. Holiday weeks are where a calendar covariate pays off, and that comes up in Part 3.
 
 The data has been through the checklist of section 6 first. Then:
 
@@ -283,7 +281,7 @@ cleanly:
 
 ![Table 3: articles/medium/tables/01_table_3.png](tables/01_table_3.png)
 
-*Table 3. Columns: Situation, What the model actually does, What that means for you.*
+*Table 3. Columns: Situation, What the model does, What that means for you.*
 
 How much each one costs is a measurement, not an opinion.
 
@@ -302,7 +300,7 @@ same hours in every gap scenario.
 
 ![Figure 4: results/figures/00_messy_data_scenarios.png](../../results/figures/00_messy_data_scenarios.png)
 
-*Figure 4. One representative window (the one whose clean WQL is the median across windows, chosen without looking at the corrupted scenarios). Grey spans: missing values or missing rows. Red dot: the spike. Panels have their own y scale.*
+*Figure 4. One representative window (the one whose clean WQL is the median across windows, chosen without looking at the corrupted scenarios). Grey spans: missing values or missing rows. Red dot: the spike. Panels have their own y scale. The sixth scenario, `spike_as_nan`, is not drawn: it is the spike panel with that one hour missing.*
 
 ### The result
 
@@ -315,7 +313,7 @@ typical window, as the geometric mean of the paired ratios.*
 
 *Table 5. Columns: Scenario, Mean WQL change, Typical window, 95% interval, Worse in.*
 
-Four findings, ordered by how much they should change what you do.
+The findings come in the order of how much they should change what you do.
 
 **Dropping rows sits in a different league.** Eighteen deleted rows out of a 2,048-hour context,
 just 0.9% of the input, cost more than everything else put together, and the confidence interval
@@ -331,7 +329,7 @@ forecast. This is the one real trap in this API, and it explains why the reposit
 asserts a regular grid before every call, and why the scenario above has to bypass that wrapper to
 exist at all.
 
-**A sentinel zero costs about twice as much as a NaN does**, roughly +23.1% against +5.0% in a
+**A sentinel zero costs more than four times what a NaN does**, +23.1% against +5.0% in a
 typical window. Zero looks like a plausible demand reading, so the model treats a reporting outage
 as a national blackout, and the per-series standardisation gets dragged along with it. The cost of a
 NaN gap, by contrast, is roughly the cost of the information that is lost.
@@ -390,7 +388,7 @@ normalise, don't difference, don't detrend, don't impute. The model standardises
 and masks NaN, and imputed values come back to you dressed as observations. Leave the target in its
 own units and post-process the quantiles if you have to, clipping negatives, for instance.
 
-One rule earns its own line, because it is the easiest way to publish a result that is not real:
+One rule gets its own line, because it is the easiest way to publish a result that is not real:
 **observed weather is a past covariate, never a known-future one.** The dataset ships observed
 temperatures, and feeding them to the horizon hands the model information it could not have had at
 forecast time. Part 3 uses the grid operator's published day-ahead forecasts instead, and says so.
@@ -407,7 +405,7 @@ forecast time. Part 3 uses the grid operator's published day-ahead forecasts ins
 If you want to run all of this on your own CSV in a single command,
 `examples/forecast_your_series.py` takes the column names, the frequency and the horizon, prints the
 checklist report, and writes out the quantile forecast along with a fan chart. Add `--backtest N`
-and it also runs the part 2 evaluation against a seasonal naive baseline.
+and it also runs the Part 2 evaluation against a seasonal naive baseline.
 
 ## What's next
 

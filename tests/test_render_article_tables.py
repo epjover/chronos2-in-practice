@@ -40,6 +40,9 @@ Some prose with a [link](../results/figures/x.png).
 
 def test_parse_cell_resolves_inline_markdown() -> None:
     assert rat.parse_cell(" **0.0388** ") == rat.Cell("0.0388", bold=True, code=False)
+    leading = rat.parse_cell("**63.9%** [60.4, 66.9]")
+    assert leading == rat.Cell("63.9% [60.4, 66.9]", bold=True, code=False)
+    assert not rat.parse_cell("plain, then **bold**").bold
     assert rat.parse_cell("`chronos-2`") == rat.Cell("chronos-2", bold=False, code=True)
     assert rat.parse_cell("63.9% [60.4, 66.9]").text == "63.9% [60.4, 66.9]"
     assert rat.parse_cell("*Figure* text").text == "Figure text"

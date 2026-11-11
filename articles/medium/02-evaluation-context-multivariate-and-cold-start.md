@@ -6,7 +6,7 @@ previous-generation Chronos-Bolt ties with Chronos-2 on a clean univariate serie
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
 > Draft for Medium. Every number is read from a CSV in [`results/`](../../results); each figure
-> names the file to upload. Published open access (not metered). Still to decide: repository URL.
+> names the file to upload. Published open access (not metered).
 
 ---
 
@@ -21,7 +21,7 @@ seasonal naive baseline by **64%**, and it wins in 84% of the 365 windows.
 
 The second result is different. **Chronos-Bolt** (the previous generation, from 2024, one call away
 in the same library, and 8.4 skill points behind Chronos-2 on fev-bench) scores 62.1% here against
-Chronos-2's 63.9%, and the confidence intervals overlap comfortably. On a clean, strongly seasonal,
+Chronos-2's 63.9%, and the confidence intervals overlap widely. On a clean, strongly seasonal,
 univariate series with no covariates, the newer model's edge doesn't show up. This isn't a knock on
 Chronos-2, though. It explains why this article exists at all, rather than just a leaderboard
 screenshot.
@@ -43,8 +43,7 @@ Whether the final number means anything comes down to three rules:
 1. **The forecaster only sees the past**, meaning the rows with `timestamp <= cutoff`, and nothing else.
 2. **The horizon carries only what is known in advance.** Targets and past-only
    covariates never cross the cutoff, and only columns explicitly declared as known covariates do.
-3. **Actuals are joined after the model has answered**, and the join requires exactly one forecast
-   row per series, target and step, so a model that drops or misaligns a series fails loudly
+3. **Actuals are joined after the model has answered**, and the join requires a single forecast row per series, target and step, so a model that drops or misaligns a series fails loudly
    instead of scoring well.
 
 The companion repository enforces all three in the harness rather than in each notebook. A guard
@@ -93,7 +92,7 @@ windows and 8,760 scored hours.
 2,048-hour context is shown; at full length a 24-hour horizon is 1% of the row and disappears.*
 
 One choice deserves mention. The context is capped at 2,048 steps, the length Chronos-2 was
-pretrained with, and Section 5 sweeps that cap rather than defending it.
+pretrained with, and section 5 sweeps that cap rather than defending it.
 
 ## 2. Against the baselines
 
@@ -122,7 +121,7 @@ follows:
 The skill score uses fev-bench's definition, `1 − geometric mean(model error / baseline error)` over
 the windows, along with a 95% bootstrap interval. It's computed over the windows of one dataset
 rather than the tasks of a benchmark, so these numbers are *not* comparable with the leaderboard
-numbers in part 1. The win rate is the share of windows the model wins.
+numbers in Part 1. The win rate is the share of windows the model wins.
 
 There's one rule for reading this part and the three that follow it. Across the series there are
 something like thirty of these 95% intervals, and with that many, one or two will clear zero purely
@@ -135,7 +134,7 @@ count as a finding.
 
 *Figure 2. Skill against the 24-hour seasonal naive over 365 windows, with bootstrap intervals.*
 
-Three things in that table are worth more than the headline.
+The headline is the least surprising part of that table.
 
 **AutoETS is 65% *worse* than repeating yesterday.** That isn't a typo or a bug. It's what automatic
 exponential smoothing does to hourly electricity load, and the reason comes down to how the model is
@@ -161,14 +160,14 @@ because the skill score is a geometric mean over windows while the mean WQL is d
 worst ones, and Chronos-2's worst window is considerably worse (WQL 0.369 against Bolt's 0.249). So
 if what matters to you is the typical day, pick Chronos-2, and if what matters is the bad days, pick
 Bolt. On this task, a fair summary is that the generational gap reported on fev-bench does not
-reproduce, which is what you would predict from part 1, where Chronos-2's margin came overwhelmingly
+reproduce, which is what you would predict from Part 1, where Chronos-2's margin came overwhelmingly
 from covariate tasks. Part 3 puts covariates in and the picture changes.
 
-## 3. Are the intervals honest?
+## 3. Are the intervals calibrated?
 
 Accuracy and calibration make different promises, and leaderboards only track one of them. An 80%
 interval is a claim that the actual value falls inside it 80% of the time. With 8,760 scored hours
-to check it against, that claim can actually be tested.
+to check it against, that claim can be tested.
 
 ![Figure 3: results/figures/02_coverage.png](../../results/figures/02_coverage.png)
 
@@ -212,7 +211,7 @@ believable alternative explanation and probably the likelier one. It does establ
 though. If you're about to publish a zero-shot result on a public dataset, run the synthetic-only
 control and report the gap.
 
-## 5. How much history does Chronos-2 actually use?
+## 5. How much history does Chronos-2 use?
 
 Chronos-2 was pretrained at a context of 2,048 steps and post-trained to 8,192. The paper reports
 that the extension helped most on GIFT-Eval, "which contains many high-frequency datasets with long
@@ -231,7 +230,7 @@ Bands are 95% bootstrap intervals.*
 
 The prediction holds up, though with some caveats. At a one-day horizon, the gain is mostly used up
 by 1,024 steps (six weeks), and the last three doublings add only 1.4 points between them,
-comfortably inside the intervals. At a one-week horizon, though, the curve keeps climbing right to
+well inside the intervals. At a one-week horizon, though, the curve keeps climbing right to
 the end, which matches the predicted direction, since a longer horizon has more shape to get right
 and keeps paying for history.
 
@@ -244,11 +243,11 @@ needs to see a week isn't quite what the data says.
 In practice, **2,048 is a good default and the 8,192 post-training buys little on a daily horizon**,
 but you should sweep the knob once on your own series, because the spread from worst to best setting
 runs over 50 skill points, far larger than the gap between any two models in section 2. Cost makes
-up the other half of this trade, and it gets measured in part 5.
+up the other half of this trade, and it gets measured in Part 5.
 
 ## 6. Multivariate mode, and the cold start
 
-Both of these rely on the same mechanism from part 1, the group ID, just aimed at different
+Both of these rely on the same mechanism from Part 1, the group ID, just aimed at different
 problems.
 
 **Joint targets barely move.** When Spanish load and price are forecast together (`target=[...]`,
@@ -266,8 +265,8 @@ testing how short history has to get before it starts to hurt, and whether group
 shortens.
 
 Five Spanish cities supply the temperatures, one turned cold and the other four left complete,
-across 52 weekly *episodes*. Each episode re-truncates the cold series, so every window is a genuine
-short-history forecast, not one that quietly regrows.
+across 52 weekly *episodes*. Each episode re-truncates the cold series, so every window is a real
+short-history forecast, not one that regrows as the backtest advances.
 
 ![Figure 5: results/figures/04_coldstart_sweep.png](../../results/figures/04_coldstart_sweep.png)
 
@@ -278,8 +277,8 @@ sharing a group returns.*
 
 *Table 4. Columns: History, Cost of the short history, Cross-learning gain.*
 
-The handicap is real, but only below about a week. At three days the cold series loses 11% of its
-quantile loss, and by three weeks the loss disappears. Cross-learning returns a consistent 2–4%
+The handicap is real, but only below about a week. At three days the cold series scores 11% worse on
+quantile loss, and by three weeks the gap is gone. Cross-learning returns a consistent 2–4%
 (positive at every history length, but only at three weeks is the bracket clear of zero). It does
 **not** grow as history shortens, though, which is the direction the paper's reasoning suggests.
 With 52 windows the brackets are too wide to call that a contradiction, so the data cannot tell, and
@@ -307,7 +306,7 @@ grouped = Chronos2Forecaster(pipeline, cross_learning=True).predict(
 )
 ```
 
-The control above is the second line with `cross_learning=False`: same frame, separate groups.
+The control above is the second call with `cross_learning=False`: same frame, separate groups.
 
 One practical detail that the library documents and that is easy to miss: with `cross_learning=True`
 the forecast depends on the batch, because every series in the batch joins the group. The
@@ -318,7 +317,7 @@ has five series, so the whole frame is one group. If you cross-learn across thou
 batches of related series (same region, same product line) rather than letting the batch boundary
 decide who informs whom.
 
-## 7. Cheat sheet, and what to carry into part 3
+## Cheat sheet, and what to carry into Part 3
 
 - Never report a single window. `backtest` → `evaluate` → `skill_table` make up the full loop, and
   the bracket matters as much as the number.
@@ -326,12 +325,12 @@ decide who informs whom.
   tell whether 0.039 is good.
 - Check coverage as well as error. `coverage_80` should read about 0.80.
 - A number to beat: **WQL 0.0388, skill 63.9%** zero-shot on day-ahead Spanish load. Covariates
-  (part 3) and fine-tuning (part 4) are measured against it on the same windows.
+  (Part 3) and fine-tuning (Part 4) are measured against it on the same windows.
 - A caution, though: on a clean univariate series the generational gap over Chronos-Bolt did not
   appear, so pick your model based on your own data.
 - Something else needs fixing: the 80% bands are too narrow at 73.4%. Whatever the next parts do
-  to accuracy, coverage is the check that confirms they did not quietly break the uncertainty, and
-  part 5 repairs it afterwards, without touching the model.
+  to accuracy, coverage is the check that confirms they did not break the uncertainty along the way, and
+  Part 5 repairs it afterwards, without touching the model.
 - One knob deserves a sweep, since context length moved the result by more than any model choice
   did.
 - For your own data, `examples/forecast_your_series.py your.csv ... --backtest N` runs this same

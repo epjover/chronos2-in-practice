@@ -1,12 +1,12 @@
 # Chronos-2 in Practice (3/5): Covariates and What Drives the Forecast
 
 **Knowing the covariates' future halves the quantile loss on fev-bench's own German price task.
-Knowing only their history buys a tenth of that. The gap is the whole story.**
+Knowing only their history takes off 11%. The gap is the whole story.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
 > Draft for Medium. Every number is read from a CSV in [`results/`](../results); each figure
-> names the file to upload. Published open access (not metered). Still to decide: repository URL.
+> names the file to upload. Published open access (not metered).
 
 ---
 
@@ -90,8 +90,7 @@ config = task_backtest_config(task)
 assert_cutoffs_match(task, epf, config)  # our 20 windows == fev's 20 published cutoffs
 ```
 
-If the translation were off by a single step, that assertion fails and the replication stops. This
-matters more than it sounds, because without it, "we reproduced the benchmark task" is just a claim
+If the translation were off by a single step, that assertion fails and the replication stops. The check is less of a formality than it sounds, because without it, "we reproduced the benchmark task" is just a claim
 nobody can check, including you.
 
 Three arms keep apart two effects that are easy to mix up:
@@ -107,8 +106,7 @@ Three arms keep apart two effects that are easy to mix up:
 *Figure 1. EPF-DE: the covariates' history against their future, scored on the task's own 20
 windows.*
 
-**Knowing the future turns out to be roughly four and a half times as valuable as knowing the
-history.** If most of the gain had shown up in `past_only`, covariates would just be extra context,
+**Knowing the future is roughly four and a half times as valuable as knowing the history.** If most of the gain had shown up in `past_only`, covariates would just be extra context,
 and you could stop worrying about forecast availability. It didn't turn out that way, and that
 changes the engineering work. You're no longer asking "which series correlate with my target" but
 "which series do I have a trustworthy forward view of".
@@ -123,13 +121,13 @@ Spanish load, and this is the first thing in the series that moves them in the r
 The Spanish dataset carries the same covariates. The grid operator publishes day-ahead forecasts of
 load, solar and onshore wind the day before, so for a horizon that ends within the next day they are
 legitimately known. The target is the hourly spot price, and the protocol follows the same 365
-day-ahead windows used in part 2.
+day-ahead windows used in Part 2.
 
 The ladder adds one kind of information at a time, so you can attribute each rung to its own cause.
 
 ![Figure 2: results/figures/05_covariate_ladder.png](../results/figures/05_covariate_ladder.png)
 
-*Figure 2. Spanish day-ahead price, WQL improvement over no covariates, 365 windows.*
+*Figure 2. Spanish day-ahead price, WQL improvement over no covariates, 365 windows. The two leak arms of section 4 are left out of the chart.*
 
 | Rung | WQL | Skill vs `none` | Wins |
 | --- | --- | --- | --- |
@@ -141,12 +139,12 @@ The ladder adds one kind of information at a time, so you can attribute each run
 **Calendar features do nothing.** That's the finding most likely to catch out anyone who has built a
 classical forecasting pipeline, where hour-of-day and day-of-week dummies are usually the first
 thing added. The interval sits tight around zero at −0.2%, and the rung wins fewer than half its
-windows. The reason shows up in part 1's architecture section, because Chronos-2 reads *positions*,
+windows. The reason shows up in Part 1's architecture section, because Chronos-2 reads *positions*,
 and 2,048 positions of hourly price already carry the daily and weekly cycle far more precisely than
 five derived columns ever could. You add calendar features when a model can't see that shape on its
 own, but this one already does.
 
-One qualification is needed here, because it bears on the advice from part 1. The calendar rung
+One qualification is needed here, because it bears on the advice from Part 1. The calendar rung
 bundles four *periodic* features (hour, weekday, month, weekend) together with the one aperiodic
 feature, holidays, and 2018 has only ten national holidays among 365 windows, too few to shift a
 yearly score no matter what happens on them. So the notebook also runs a rung with the holiday flag
@@ -158,9 +156,9 @@ holiday:
 | `+holiday flag only` | −0.4% [−1.7, +0.8] | **+14.0%** [+4.9, +22.8], wins 8 of 10 | −0.9% [−2.1, +0.5] |
 | `+calendar` | −0.2% [−1.7, +1.3] | +12.3% [−1.9, +22.6], wins 7 of 10 | −0.6% [−2.1, +0.9] |
 
-Both halves of part 1's claim hold up. The periodic calendar turns out to be redundant, since the
-model reads it off the series itself, and on the days that fall outside the series' *not* rhythm the
-flag accounts for fourteen percent of the quantile loss, with an interval that clears zero even at
+Both halves of Part 1's claim hold up. The periodic calendar is redundant, since the model
+reads it off the series itself, and on the days that do *not* follow the series' rhythm the flag
+takes fourteen percent off the quantile loss, with an interval that clears zero even at
 ten windows. The yearly null amounts to an average of a large gain on ten days and a small cost, too
 small to pin down, spread across the other 355 days. Keep the holiday flag and drop the rest of the
 calendar.
@@ -168,7 +166,7 @@ calendar.
 **The operator's forecasts bring 8.3%, and adding past generation on top pushes it to 11.8%.**
 Both intervals clear zero. The second rung uses *past-only* covariates (their history, not
 their future), which is the smaller of the two effects measured in section 2, and it still
-adds three points on top. On this market, the covariates work alongside each other rather than
+adds three and a half points on top. On this market, the covariates work alongside each other rather than
 replacing one another.
 
 The gain is also considerably smaller than EPF-DE's 49.5%, but that isn't a contradiction. One
@@ -179,13 +177,13 @@ market rather than of the model. A recent benchmark of Chronos-2 on daily wholes
 European markets reaches a similar conclusion from the other direction: the model's relative value
 depends on the comparator, the information set and the evaluation period (Lin & Ti, 2026).
 
-## 4. The leak, and what it actually looks like
+## 4. The leak, and what it looks like
 
 Two arms probe the mistake, and they disagree, which is what makes it interesting.
 
 | Arm | Skill vs `none` | Wins |
 | --- | --- | --- |
-| `+TSO forecasts` (honest) | +8.3% | 64% |
+| `+TSO forecasts` (no leak) | +8.3% | 64% |
 | `LEAK: observed values as known-future` | +7.3% | 65% |
 | `LEAK: the target itself as known-future` | **+83.3%** [+82.6, +84.0] | **100%** |
 
@@ -208,7 +206,7 @@ So the rule isn't "leaks inflate results by X%". **A covariate that makes your m
 dramatically better is a reason to audit the column, not to publish.** And where a quantity exists
 in both a forecast and an observed version, prefer the forecast.
 
-## 5. Which covariates is the forecast actually using?
+## 5. Which covariates is the forecast using?
 
 Chronos-2 ships no explainer: no `.explain()`, no importance attribute. What it does ship is
 something attribution needs. Zero-shot inference costs only one forward pass, so switching an input
@@ -282,7 +280,7 @@ calendar's 0.0018 comes to about 3.6% of the loss, and the four players together
 check, and it tells us twelve windows are enough to rank the players, even if they aren't enough to
 put a tight interval on each one.
 
-**The three methods disagree, and that disagreement turns out to be useful.** Ablation puts the wind
+**The three methods disagree, and the disagreement is useful.** Ablation puts the wind
 forecast first, while Shapley ranks it third, close to zero. Ablation only asks one question, what
 happens without this covariate when all the others are still present, and that is just one coalition
 out of sixteen, the one that happens to understate a covariate when another can substitute for it.
@@ -308,16 +306,16 @@ treat each one as a player that a coalition can switch off.
 
 | Segment | Shapley value |
 | --- | --- |
-| lags 25–168 (rest of the week) | **0.0306** |
+| lags 25–168 (rest of the week) | **0.0305** |
 | lags 169–672 (rest of four weeks) | 0.0219 |
 | lags 1–24 (the last day) | 0.0193 |
 | lags 673+ (older) | 0.0186 |
 
-Two things to take from this.
 
-**The price's own history matters roughly fifteen times as much as the covariates.** Look at the
-scales involved. The context segments contribute 0.019 to 0.031 each, while the covariates
-contribute only 0.0001 to 0.0018. Section 3's ladder put covariates at 8 to 12%, and this shows what
+
+**The price's own history matters about twenty-five times as much as the covariates.** Look at the
+scales involved. The four context segments contribute 0.019 to 0.031 each and 0.090 between them,
+while the four covariate players add up to 0.0035. Section 3's ladder put covariates at 8 to 12%, and this shows what
 accounts for the other 90%. For all the attention covariates get, including in this article, the
 series itself remains the dominant input.
 
@@ -327,7 +325,7 @@ is the most recent day (lag 1: 0.00998, while every other position stays at or b
 the Shapley value for that same last day is only the *third* largest. Both results are correct,
 because occlusion hides one day while all the others stay present, so it measures a marginal
 contribution at full coalition, whereas Shapley averages over coalitions where the rest of the
-week is also missing. The last day turns out to be the most useful day to have, but also the
+week is also missing. The last day is the most useful day to have, but also the
 easiest one to replace, since the rest of the week can stand in for it.
 
 ![Figure 5: results/figures/06_occlusion.png](../results/figures/06_occlusion.png)
@@ -365,7 +363,7 @@ pipeline, and you'd find it in one cell.
 It's a sensitivity analysis, not a causal claim. It shows how the model responds to an input, not
 what the market would do.
 
-## 8. The limit worth stating
+## 8. A limit to keep in mind
 
 Chronos-2 accepts **numeric and categorical covariates only**, and it takes no text. A promotion's
 description, an incident report, a weather warning written in words, none of these go in, and the

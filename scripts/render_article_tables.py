@@ -52,9 +52,13 @@ class Cell:
 
 
 def parse_cell(raw: str) -> Cell:
-    """Strip ``**``, backticks and ``*`` from a cell; remember if the whole cell was bold/code."""
+    """Strip ``**``, backticks and ``*`` from a cell; remember if it was bold or code.
+
+    A cell that opens with a bold run (``**63.9%** [60.4, 66.9]``) is drawn bold in full: the
+    emphasis marks the cell, and a table image has no partial weights.
+    """
     text = raw.strip()
-    bold = text.startswith("**") and text.endswith("**") and len(text) > 4
+    bold = re.match(r"\*\*.+?\*\*", text) is not None
     code = text.startswith("`") and text.endswith("`") and text.count("`") == 2
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
     text = re.sub(r"`([^`]*)`", r"\1", text)
@@ -139,7 +143,7 @@ def render_table(header: list[Cell], rows: list[list[Cell]], aligns: list[str], 
                     y0 + row_h[r] / 2,
                     "\n".join(lines),
                     ha=ha,
-                    va="center",
+                    va="center_baseline",  # same baseline along a row, whatever the glyphs
                     fontsize=font,
                     fontweight="bold" if (r == 0 or cell.bold) else "normal",
                     family=MONO_FONT if cell.code else None,

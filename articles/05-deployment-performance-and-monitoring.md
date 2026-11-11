@@ -8,21 +8,7 @@ benchmark said 59×, and the reason it was wrong is the most useful lesson in th
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
 > Draft for Medium. Every number is read from a CSV in [`results/`](../results); each figure
-> names the file to upload. Published open access (not metered). Still to decide: repository URL.
-
----
-
-- **Code:** [`bench/`](https://github.com/epjover/chronos2-in-practice/tree/main/bench),
-  [`deploy/`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy),
-  [`monitoring/`](https://github.com/epjover/chronos2-in-practice/tree/main/monitoring),
-  [`scripts/cost_table.py`](https://github.com/epjover/chronos2-in-practice/blob/main/scripts/cost_table.py)
-  : scripts rather than notebooks, because this is the part you run from a cron job.
-- **Data:** hourly Spanish load, 2018, for the latency benchmark and the monitoring replay;
-  `us-east-1` on-demand rates from the AWS Price List API.
-- **Versions:** `chronos-forecasting==2.3.2`, `fastapi==0.162.0`, Python 3.11.
-- **Hardware:** Intel Core i9-12900K with 8 cores available to the process, PyTorch on 8
-  threads; NVIDIA RTX 3070 (8 GB). Every timing below is the median of 30 calls on this machine,
-  with its percentiles, and says so in its CSV.
+> names the file to upload. Published open access (not metered).
 
 ---
 
@@ -37,6 +23,20 @@ That's the opposite of how a hosted LLM usually works, and it makes idle time, r
 the dominant cost term for most forecasting workloads. (The contrast matters, since Google's
 BigQuery exposes TimesFM as the `AI.FORECAST` SQL function, billed through BigQuery. Nobody sells
 Chronos-2 that way.)
+
+- **Code:** [`bench/`](https://github.com/epjover/chronos2-in-practice/tree/main/bench),
+  [`deploy/`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy),
+  [`monitoring/`](https://github.com/epjover/chronos2-in-practice/tree/main/monitoring),
+  [`scripts/cost_table.py`](https://github.com/epjover/chronos2-in-practice/blob/main/scripts/cost_table.py)
+  : scripts rather than notebooks, because this is the part you run from a cron job.
+- **Data:** hourly Spanish load, 2018, for the latency benchmark and the monitoring replay;
+  `us-east-1` on-demand rates from the AWS Price List API.
+- **Versions:** `chronos-forecasting==2.3.2`, `fastapi==0.162.0`, Python 3.11.
+- **Hardware:** Intel Core i9-12900K with 8 cores available to the process, PyTorch on 8
+  threads; NVIDIA RTX 3070 (8 GB). Every timing below is the median of 30 calls on this machine,
+  with its percentiles, and says so in its CSV.
+
+---
 
 ## 1. Throughput: batch size matters more than hardware, until it doesn't
 
@@ -69,14 +69,14 @@ Full results are in [`results/bench_latency_cuda.csv`](../results/bench_latency_
 [`results/bench_latency_cpu.csv`](../results/bench_latency_cpu.csv). What stands out is what happens
 at 2,048 hours of context (medians):
 
-| | 1 series | 8 | 32 | 128 | peak |
+| | 1 series | 8 | 32 | 128 | Peak |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `chronos-2`, RTX 3070 | 37.0/s | 170.6/s | 203.5/s | 216.2/s | **216/s** |
 | `chronos-2`, 8 CPU cores | 9.1/s | 13.0/s | 13.1/s | 12.5/s | **13/s** |
 | `chronos-2-small`, RTX 3070 | 57.0/s | 392.3/s | 594.0/s | 714.0/s | **714/s** |
 | `chronos-2-small`, 8 CPU cores | 31.0/s | 43.9/s | 46.0/s | 42.3/s | **46/s** |
 
-Five things to take away.
+
 
 **How much to trust a latency number.** A median hides a shape, so it helps to look at the shape
 itself ([`results/bench_stability.csv`](../results/bench_stability.csv), drawn in Figure 2). On the
@@ -108,16 +108,16 @@ lifting throughput.
 cuts peak throughput from 777 to 216 series per second. Part 2 found that context beyond 1,024 hours
 bought about 1.4 points of skill, so this is what that trade costs on the other side.
 
-**The small checkpoint runs about 3.5× faster and comes in roughly a quarter worse.**
+**The small checkpoint runs more than three times faster and comes in roughly a quarter worse.**
 `chronos-2-small` is 3.3× faster on the GPU and 3.5× faster on the CPU at 2,048 hours. Part 1
 promised the other half of that trade, so
 [`bench/small_vs_base_accuracy.py`](../bench/small_vs_base_accuracy.py) runs both checkpoints
 through Part 2's protocol, using the same 365 day-ahead windows and 2,048 hours of context:
 
-| checkpoint | params | mean WQL | 80% coverage | skill vs `chronos-2` [95% CI] | wins | skill vs seasonal naive |
+| Checkpoint | Params | WQL | 80% coverage | Skill vs `chronos-2` [95% CI] | Wins | Skill vs seasonal naive |
 | --- | ---: | ---: | ---: | --- | ---: | ---: |
 | `chronos-2` | 119.5M | 0.0388 | 73.4% | n/a | n/a | 63.9% |
-| `chronos-2-small` | 27.9M | 0.0426 | 71.5% | **−24.9%** [−30.0, −20.3] | 29.3% | 54.9% |
+| `chronos-2-small` | 27.9M | 0.0426 | 71.5% | **−24.8%** [−30.0, −20.3] | 29% | 54.9% |
 
 That is a real cost. On the typical window the small model's quantile loss comes in a quarter
 higher, and the interval is nowhere near zero. But it is also still 55% better than the seasonal
@@ -153,15 +153,15 @@ uv run --group deploy python deploy/fastapi/smoke_test.py --wait 300 \
 Measured against the running service using 8 CPU cores, a week of hourly context, and a 24-step
 horizon:
 
-| series per request | client p50 | client p95 | server p50 |
+| Series per request | Client p50 | Client p95 | Server p50 |
 | ---: | ---: | ---: | ---: |
 | 1 | 48.9 ms | 73.8 ms | 46.6 ms |
 | 8 | 116.9 ms | 178.8 ms | 113.1 ms |
 | 32 | 352.0 ms | 432.9 ms | 343.9 ms |
 | 128 | 1,234.8 ms | 1,332.8 ms | 1,207.5 ms |
 
-[`results/09_service_latency.csv`](../results/09_service_latency.csv), written by `smoke_test.py
---csv`.) The HTTP layer adds 2 to 27 ms on top of the model, which is negligible, but it helps to
+(Source: [`results/09_service_latency.csv`](../results/09_service_latency.csv), written by
+`smoke_test.py --csv`.) The HTTP layer adds 2 to 27 ms on top of the model, which is negligible, but it helps to
 know this precisely so you don't end up chasing the wrong bottleneck.
 
 The validation surface is the unglamorous part that decides whether this survives contact with real
@@ -171,7 +171,7 @@ naive and offset timestamps, NaN and Infinity, quantile levels outside (0, 1), a
 past the limits: 1,000 series, horizon 1 to 1,024, and 32,768 grid steps per series. The library
 then validates the frames a second time inside `predict_df`. That pass can be switched off with
 `validate_inputs=False` once you guarantee its three conditions yourself (frames sorted by id and
-timestamp, a future frame with exactly `prediction_length` rows per id, a regular grid), and the
+timestamp, a future frame with `prediction_length` rows for every id, a regular grid), and the
 service meets all three after `validate_and_prepare`. It keeps the flag at its default anyway: the
 saving is a few milliseconds on requests that take tens, and a silent wrong forecast costs more.
 
@@ -264,7 +264,7 @@ if you're going to put a dollar sign in an article, read it from the API.
 instances with GPU instances at published `us-east-1` on-demand rates. The annotation is the
 rate-only break-even, the one number here that does not depend on a local measurement.*
 
-| instance | vCPU / GPU | USD/hour | USD/month (730 h) | USD per million forecasts |
+| Instance | vCPU / GPU | USD/hour | USD/month (730 h) | USD per million forecasts |
 | --- | --- | ---: | ---: | ---: |
 | `ml.g4dn.xlarge` | 4 / 1 | 0.736 | 537 | **0.95** |
 | `ml.g6.xlarge` | 4 / 1 | 1.127 | 822 | 1.45 |
@@ -304,12 +304,16 @@ smaller instance by roughly the ratio of cores.
 GB-second of request duration, so at 6 GB and the measured single-request CPU latencies, one million
 single-series requests cost:
 
-| checkpoint | context | seconds per request | USD per million requests |
+| Checkpoint | Context | Seconds per request | USD per million requests |
 | --- | ---: | ---: | ---: |
 | `chronos-2` | 512 | 0.054 | 6.42 |
 | `chronos-2` | 2,048 | 0.109 | 13.13 |
 | `chronos-2-small` | 512 | 0.017 | 2.09 |
 | `chronos-2-small` | 2,048 | 0.032 | 3.88 |
+
+Those latencies come from 8 dedicated cores. AWS sizes a serverless endpoint's compute from the
+memory you choose and publishes no core count for it, so read the column as a lower bound, for the
+same reason the instance table sticks to 8 vCPUs.
 
 Per forecast, that comes out worse than any always-on instance, but what matters here is the
 denominator. An always-on `ml.c7i.2xlarge` costs $312 a month *whether you use it or not*, and a
@@ -347,7 +351,7 @@ rolling = rolling_metrics(joined, window=28, quantile_levels=(0.1, 0.9), nominal
 alerts = retraining_alerts(rolling, wape_threshold=0.06)
 ```
 
-Three of the design decisions deserve copying.
+A few of the design decisions are meant to be copied.
 
 **Log the input hash, not just the forecast.** `context_hash` is a stable digest of the exact frame
 the model saw, NaNs included. Six weeks later, when a forecast looks wrong, this hash lets you tell
@@ -373,7 +377,7 @@ but with the waiting removed). It produces 8,760 logged forecasts across 365 dis
 retraining threshold, and the achieved coverage of the nominal 80% interval. Red markers are
 cutoffs above the threshold.*
 
-| | min | median | max |
+| | Min | Median | Max |
 | --- | ---: | ---: | ---: |
 | rolling WAPE (28 cutoffs) | 2.65% | 4.22% | 6.75% |
 | 80% interval coverage | 55.1% | 77.5% | 87.1% |
@@ -381,15 +385,15 @@ cutoffs above the threshold.*
 The rolling WAPE pools 28 days of absolute error over 28 days of load, so it differs from Part 2's
 per-window mean of 4.7%: the two agree on the level but differ in how the averaging is done.
 
-At a 6% threshold, **13 of 365 cutoffs breach, in 4 episodes**: late January, mid-February and
-Christmas week. That clustering is the most useful thing in the figure, and it says more about the
+At a 6% threshold, **13 of 365 cutoffs breach, in 4 episodes**: one in late January, two in
+mid-February a day apart, and one in Christmas week. That clustering is the most useful thing in the figure, and it says more about the
 rule than about the model. These are cold snaps and a national holiday, recurring and predictable
 conditions, not drift. A fixed threshold on a seasonal series will page you every Christmas and
 teach your on-call to ignore it. So either set the threshold from the same season last year, or
 alert on the gap between this year and last year rather than on the level.
 
-The coverage panel is the one I'd act on first. The nominal 80% band averages 74.8%, but it drops to
-55% in winter, and that's the same under-coverage Part 2 found zero-shot and Part 4 made slightly
+The coverage panel is the one I'd act on first. The rolling coverage of the nominal 80%
+band averages 74.8% (73.4% over the whole year, as in Part 2), but it drops to 55% in winter, and that's the same under-coverage Part 2 found zero-shot and Part 4 made slightly
 worse through fine-tuning. The median holds up fine, but winter doesn't. Section 5 fixes it.
 
 **Input drift** is the complement (errors tell you something broke after the fact, while a shift
@@ -406,7 +410,7 @@ confidence interval excludes zero. Part 4's numbers set the expectation, since a
 minutes and 4.6 MB to produce, so the expensive part of this loop is the evaluation rather than the
 training.
 
-## 5. Pricing the intervals: the one fix the series owed
+## 5. Calibrating the intervals: the one fix the series owed
 
 Every part turned up the same defect, and none of them fixed it. On Spanish load, the 80% band
 covers only 73.4% of the hours (56% in December), while the levers used in Parts 2 to 4 (context,
@@ -431,10 +435,10 @@ from c2p.eval import backtest
 
 calibration_frame = backtest(model, series_up_to_2017, calibration_config)  # forecasts + actuals
 calibration = calibrate(calibration_frame, quantile_levels=config.quantile_levels, mode="scaled")
-honest = ConformalForecaster(model, calibration)  # same .predict(); wider where it has to be
+calibrated = ConformalForecaster(model, calibration)  # same .predict(); wider where it has to be
 ```
 
-| | WQL | 80% coverage | 98% coverage | WQL skill vs zero-shot [95% CI] | worst month (80%) |
+| | WQL | 80% coverage | 98% coverage | WQL skill vs zero-shot [95% CI] | Worst month (80%) |
 | --- | ---: | ---: | ---: | --- | ---: |
 | zero-shot | 0.0388 | 73.4% | 93.6% | n/a | 56.1% (Dec) |
 | conformal, additive | 0.0387 | **83.2%** | **98.4%** | −5.9% [−6.9, −5.0] | 68.9% (Feb) |
@@ -446,17 +450,18 @@ honest = ConformalForecaster(model, calibration)  # same .predict(); wider where
 variants. The calibration lifts the whole curve by about ten points; it cannot change its
 shape.*
 
-Three readings.
+
 
 **The bands are trustworthy now, and the median did not pay for it.** Coverage comes in at 83% and
 98%, a touch above nominal, which is what the method guarantees on a finite calibration set, and the
 mean WQL stays the same to the third decimal. One housekeeping step is built into the adjustment:
 widening the 80% band and the 98% band by different amounts can make quantiles cross (a 0.9 column
 below the 0.8 one), so `conformalize` sorts the quantile columns of every row afterwards, the
-rearrangement of Chernozhukov et al. [8], which never worsens the pinball loss. The *typical* window does pay something: the skill
+rearrangement of Chernozhukov et al. (2010), which never worsens the pinball loss. The *typical* window does pay something: the skill
 score runs −4 to −6%, because on an ordinary day the wider band costs a little pinball loss, and
-only the bad days give that back. In the 10% worst zero-shot windows the calibrated WQL comes out
-lower (0.147 against 0.152). That is the trade a reserve-margin decision wants, and a mean would
+only the bad days give that back. In the worst tenth of the zero-shot windows the calibrated WQL comes out
+lower (0.147 with the scaled variant against 0.152, the `WQL_worst_decile` column of
+`09_conformal_summary.csv`). That is the trade a reserve-margin decision wants, and a mean would
 hide it.
 
 **The adjustment is largest where the model is most overconfident, and that is interpretable.** The
@@ -474,7 +479,7 @@ bands instead of the weights, and it's where I'd take this series next.
 
 ## 6. The series, in one page
 
-Five articles, one dataset, one protocol. What actually moved the number, in order:
+Five articles, one dataset, one protocol. What moved the number, in order:
 
 | Lever | Gain | Measured as | Where |
 | --- | ---: | --- | --- |
@@ -484,21 +489,20 @@ Five articles, one dataset, one protocol. What actually moved the number, in ord
 | LoRA rank 8 on 2.5 years of Spanish electricity | +2.3% | WQL vs zero-shot, Spanish load | Part 4 |
 | Full fine-tune, 119M weights | +1.7% | WQL vs zero-shot, Spanish load | Part 4 |
 | GPU instead of 8 CPU cores | 16.5× | series per second, same model, threads set | Part 5 |
-| `chronos-2-small` instead of `chronos-2` | 3.3× faster, −24.9% | WQL vs base model, Spanish load | Part 5 |
+| `chronos-2-small` instead of `chronos-2` | 3.3× faster, −24.8% | WQL vs base model, Spanish load | Part 5 |
 | Conformal calibration of the bands | 73.4% → 83.5% | coverage of the 80% band, WQL unchanged | Part 5 |
 
 The rows sit on different scales and different targets, and that's on purpose. What the table shows
 is the ordering, not the sum.
 
-And what didn't move it: a weekly seasonal naive baseline instead of a daily one, multivariate
-grouping of load with its own covariates (−0.06%), calendar features added on top of a model that
-already reads the clock (−0.18%), and, on this dataset, the difference between Chronos-2 and the
+And what didn't move it: a weekly seasonal naive baseline instead of a daily one, forecasting load jointly with price (−0.1%), calendar features added on top of a model that
+already reads the clock (−0.2%), and, on this dataset, the difference between Chronos-2 and the
 previous-generation Chronos-Bolt on a clean univariate series.
 
 The order matters more than any single row. Context and covariates are configuration; fine-tuning is
 a project; hardware is a purchase order. Most teams start with the third.
 
-## 7. Cheat sheet
+## Cheat sheet
 
 - Before any CPU number, print `torch.get_num_threads()` and set it yourself. Record the CPU
   model and the thread count next to every latency.
@@ -512,9 +516,9 @@ a project; hardware is a purchase order. Most teams start with the third.
   alert once per episode, with a threshold that knows what month it is.
 - Calibrate the bands on last year before you publish an interval.
 
-## 8. Where this series would go next
+## Where this series would go next
 
-There are three things I chose not to do, in case you want to.
+A few things I chose not to do, in case you want to.
 
 **Make the calibration seasonal.** Section 5 fixed the average coverage but left the shape alone, so
 summer stayed over-covered and winter stayed under. Calibrating by month, or adapting the shift to
@@ -552,6 +556,8 @@ the protocol was written down in the first place.
    https://www.kaggle.com/datasets/nicholasjhana/energy-consumption-generation-prices-and-weather
 10. Model card: `amazon/chronos-2`. https://huggingface.co/amazon/chronos-2 (the A10G throughput
     figure is from reference 1, with its footnote on batch, context and horizon).
+11. Amazon SageMaker AI, *Deploy models with Amazon SageMaker Serverless Inference* (memory size
+    and compute). https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html
 
 **Suggested tags:** Time Series Forecasting · MLOps · Machine Learning · Foundation Models ·
 Python

@@ -1,4 +1,4 @@
-"""Latency and throughput of Chronos-2 against batch size, context length and checkpoint.
+r"""Latency and throughput of Chronos-2 against batch size, context length and checkpoint.
 
 Article 5 needs two numbers an accuracy benchmark never reports: how long one ``predict`` call
 takes, and how many series per second a machine sustains. Both depend on three things the caller
@@ -27,7 +27,7 @@ Usage::
 
     uv run python bench/bench_cpu_gpu.py --device cpu
     uv run python bench/bench_cpu_gpu.py --device cuda
-    uv run python bench/bench_cpu_gpu.py --device cuda --dtype bfloat16 \\
+    uv run python bench/bench_cpu_gpu.py --device cuda --dtype bfloat16 \
         --name bench_latency_cuda_bf16
 
 Results go to ``results/bench_latency.csv`` (one row per cell) and

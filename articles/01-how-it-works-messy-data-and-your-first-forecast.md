@@ -1,4 +1,4 @@
-# Chronos-2 in Practice (1/5): How It Works, Messy Data and Your First Forecast
+# Chronos-2 in Practice (1/7): How It Works, Messy Data and Your First Forecast
 
 **A 120M-parameter forecasting model, no training, a week of Spanish electricity demand in quantiles, and the one data mistake that more than doubles its error.**
 
@@ -18,16 +18,26 @@ about three tenths of a second, and the median forecast lands 811 MW from what h
 
 Then you delete 18 rows from the input, not the values but the *rows* themselves, the way a failed
 export or a careless `dropna()` deletes them. You hand the model that, tell it the data is hourly,
-and nothing complains, no error, no warning. Its error more than doubles. Across 20 weekly forecast
-origins, the weighted quantile loss rises by 111% on average, and by 203% at a typical origin.
+and nothing complains, no error, no warning. Its error more than doubles. Across 40 forecast
+origins spread over a year, the weighted quantile loss rises by 104% on average, and by 208% at a
+typical origin.
 
-This article is about the gap between those two paragraphs. Part 1 of five covers what Chronos-2 is,
-what its benchmark numbers mean and where they turn out thinner than they look, how to get a first
-probabilistic forecast out of it, and the data checklist that keeps the second paragraph from
-happening to you. Parts 2 to 5 go on to cover evaluation, covariates, fine-tuning and production.
+This article is about the gap between those two paragraphs. Part 1 of seven covers what Chronos-2
+is, what its benchmark numbers mean and where they turn out thinner than they look, how to get a
+first probabilistic forecast out of it, and the data checklist that keeps the second paragraph from
+happening to you. The rest of the series:
+
+| Part | Question |
+| --- | --- |
+| 2 | How good is it, measured properly, and against what? |
+| 3 | What do covariates add, and which ones is the forecast using? |
+| 4 | When does fine-tuning pay, and what does it cost? |
+| 5 | How do you serve it, how fast is it, and what does a forecast cost? |
+| 6 | How do you know it has stopped working, and how do you fix its intervals? |
+| 7 | What about daily data, a thousand series, and the model's embeddings? |
 
 There are already good walkthroughs of what Chronos-2 can do (Guo's two-part series on Towards Data
-Science, 2026, tours the four forecasting modes and five ways to fine-tune). This series asks a
+Science, 2026 [11], tours the four forecasting modes and five ways to fine-tune). This series asks a
 different question, namely how much each of those capabilities *delivers*, measured the same way
 every time, on one real dataset, with a baseline in every table and a confidence interval on every
 number. Where a result is small or absent, it says so.
@@ -38,8 +48,8 @@ number. Where a result is small or absent, it says so.
   both runnable on a CPU and openable in Colab. `c2p` in the imports is the repository's own
   helper package (`src/c2p/`, installed by `uv sync`), not something from PyPI: the model
   itself comes from `chronos-forecasting`.
-- **Data:** the CC0 Kaggle dataset *Hourly energy demand generation and weather* (Spanish load,
-  prices, generation and the grid operator's own day-ahead forecasts, 2015–2018).
+- **Data:** the CC0 Kaggle dataset *Hourly energy demand generation and weather* [9] (Spanish
+  load, prices, generation and the grid operator's own day-ahead forecasts, 2015–2018).
 - **Versions:** `chronos-forecasting==2.3.2` on Python 3.11. The Chronos API has changed between
   minor releases, so the version matters.
 - **Hardware:** every timing in the series names the machine it ran on: here an Intel Core
@@ -53,7 +63,7 @@ number. Where a result is small or absent, it says so.
 Chronos-2 is the third generation of Amazon's time series foundation models, and the family has
 changed shape with every release.
 
-**Chronos (March 2024)** treated forecasting as a language-modelling problem. It would scale a
+**Chronos (March 2024)** [3] treated forecasting as a language-modelling problem. It would scale a
 series, bin the values into a fixed vocabulary, and train a T5 encoder–decoder to predict the next
 token. To get a distribution, you sampled 20 trajectories and took quantiles of them. It worked,
 though it was slow in practice.
@@ -62,16 +72,16 @@ though it was slow in practice.
 blocks of consecutive steps), and the model produces quantiles for the full horizon directly, in a
 single forward pass. That makes it much faster and more accurate.
 
-**Chronos-2 (October 2025)** keeps the patches and the direct quantiles, and it adds something
-neither predecessor could manage, since it reads several series at once and lets them inform each
-other. One 120M-parameter encoder now covers univariate forecasting, multivariate forecasting, and
-forecasting with past and known-future covariates, all zero-shot and all run through the same
-`predict_df` call. The weights are released under Apache-2.0.
+**Chronos-2 (October 2025)** [1, 2] keeps the patches and the direct quantiles, and it adds
+something neither predecessor could manage, since it reads several series at once and lets them
+inform each other. One 120M-parameter encoder now covers univariate forecasting, multivariate
+forecasting, and forecasting with past and known-future covariates, all zero-shot and all run
+through the same `predict_df` call. The weights are released under Apache-2.0 [4].
 
 ![Figure 1: results/figures/01_architecture.png](../results/figures/01_architecture.png)
 
 *Figure 1. One forward pass through Chronos-2. Drawn by `c2p.plots.architecture` from the limits
-reported by the loaded checkpoint; the stages come from section 3 of the technical report.*
+reported by the loaded checkpoint; the stages come from section 3 of the technical report [1].*
 
 Step 4 makes the difference. Chronos-2 is an encoder-only transformer that follows the T5 encoder
 closely (12 blocks, `d_model` 768, 12 heads, rotary position embeddings), but each block
@@ -101,7 +111,8 @@ Parts 2 and 3 are that table applied twice.
 It helps to note two more details before the first forecast, because both come back later.
 
 **The model never sees dates.** It gets a *relative* time index, each step's position divided by the
-maximum context length, plus a mask, and nothing else. No month, no day of week, no holiday. It can
+maximum context length, plus a mask, and nothing else (section 3.1 of [1]). No month, no day of
+week, no holiday. It can
 pick up the *periodic* part of the calendar from the series itself (Part 3 measures how well), but
 anything aperiodic, holidays above all, has to come in as a covariate. On the ten national holidays
 of 2018, a single holiday flag cuts the quantile loss by 14%. More immediately, Chronos-2 has no way
@@ -109,15 +120,16 @@ to notice that a row is missing, and that's why section 5 of this article matter
 
 **Everything beyond univariate was learned from synthetic data.** The pretraining corpus mixes real
 univariate datasets with synthetic ones, but the multivariate and covariate *structures* are
-entirely synthetic, built by imposing relationships on univariate series. The authors say this
-plainly in the discussion, and an ablation backs it up: a Chronos-2 trained only on synthetic data
-performs "only slightly below" the released model on two of the three benchmarks. So the capability
+entirely synthetic, built by imposing relationships on univariate series (section 4.2 of [1]).
+The authors say this plainly in the discussion, and an ablation backs it up (section 5.4): a
+Chronos-2 trained only on synthetic data performs "only slightly below" the released model on two
+of the three benchmarks. So the capability
 you are about to rely on for real covariates was never trained on a real covariate.
 
 ## 2. What the benchmarks say, and what they don't
 
-The technical report puts the 120M model through three benchmarks, measuring it against the
-strongest pretrained competitors as well as a set of statistical baselines.
+The technical report puts the 120M model through three benchmarks (section 5.1 of [1]), measuring
+it against the strongest pretrained competitors as well as a set of statistical baselines.
 
 ![Figure 2: results/figures/01_paper_benchmarks.png](../results/figures/01_paper_benchmarks.png)
 
@@ -135,14 +147,15 @@ Two headline metrics come up again and again, and each one answers a different q
 
 A model can lead on one and not the other, so read both.
 
-**fev-bench** (100 tasks, the broadest coverage of real scenarios and the only one of the three with
-covariate tasks): none of its datasets were seen during training. Scored on scaled quantile loss,
-Chronos-2 takes a 90.7% win rate and a 47.3% skill score, against 80.8% / 42.6% for TiRex and 75.9%
-/ 42.3% for TimesFM-2.5; the report's bootstrap intervals show the margin over both holds up beyond
+**fev-bench** [6] (100 tasks, the broadest coverage of real scenarios and the only one of the three
+with covariate tasks): none of its datasets were seen during training. Scored on scaled quantile
+loss, Chronos-2 takes a 90.7% win rate and a 47.3% skill score, against 80.8% / 42.6% for TiRex
+[13] and 75.9% / 42.3% for TimesFM-2.5 [14]; the report's bootstrap intervals show the margin over
+both holds up beyond
 chance. This is the benchmark where the covariate machinery shows up, and Chronos-2's win margin is
 largest here.
 
-**GIFT-Eval** covers 97 tasks from 55 datasets, weighted towards high-frequency series and long
+**GIFT-Eval** [7] covers 97 tasks from 55 datasets, weighted towards high-frequency series and long
 horizons. On WQL, Chronos-2 scores 51.4 against TimesFM-2.5's 51.0, so it leads by **0.4 points**.
 But there is a caveat that matters more than that lead. The authors kept the pretraining corpus
 clear of every GIFT-Eval *test* split, but it does partially overlap the *training* portions of some
@@ -161,7 +174,7 @@ call away, scores 38.9 on fev-bench against 47.3. Part 2 uses it as a free basel
 higher fev-bench skill scores than Chronos-2's 47.3: Mistral's Timestral-209M at 50.4 (October
 2026, under a modified MIT licence), The Forecasting Company's t0-gamma at 49.4 (13 October 2026,
 Apache-2.0) and Google's TimesFM-3 at 49.0 (released 31 August 2026, under a non-commercial
-licence). Those figures come from the vendors' own model cards, so check
+licence). Those figures come from the vendors' own model cards [12], so check the leaderboards [8],
 [fev-bench](https://huggingface.co/spaces/autogluon/fev-bench) and
 [GIFT-Eval](https://huggingface.co/spaces/Salesforce/GIFT-Eval) before you quote a ranking, and date
 whatever snapshot you cite. Even so, Chronos-2 remains a defensible default for reasons a ranking
@@ -170,7 +183,8 @@ an ecosystem (AutoGluon, SageMaker) that's already wired for it.
 
 None of this settles anything about *your* series. A benchmark picks your default, but it does not
 evaluate your problem. Part 2 replaces all of it with a rolling-origin backtest on one real dataset
-against Seasonal Naive, AutoETS and Chronos-Bolt.
+against Seasonal Naive, AutoETS, MSTL, Chronos-Bolt and the forecast the grid operator published at
+the time.
 
 ## 3. Install it and load it
 
@@ -190,7 +204,7 @@ In a project of your own, the only package you need is the model's:
 uv add "chronos-forecasting==2.3.2"   # or: pip install "chronos-forecasting==2.3.2"
 ```
 
-Where it runs is decided when PyTorch is installed. In code it is one argument:
+Where it runs is decided when PyTorch is installed. In code it is one argument [5]:
 
 ```python
 from chronos import Chronos2Pipeline
@@ -276,12 +290,12 @@ If anything the bands are a little wide here. And one week is an anecdote in eit
 because in the 24-hour backtest of the next section, the same model on the same clean series has a
 window-to-window standard deviation of WQL *larger than its mean*. Nothing above is compared to a
 baseline, either. Part 2 does that properly: many origins, bootstrap intervals, Seasonal Naive,
-AutoETS, Chronos-Bolt.
+AutoETS, MSTL, Chronos-Bolt.
 
 ## 5. What Chronos-2 does with imperfect data
 
-Everything in this section follows from one sentence in section 3.1 of the report, that the model
-sees **positions, not dates**. The timestamps you pass in determine only the timestamps that come
+Everything in this section follows from one sentence in section 3.1 of the report [1], that the
+model sees **positions, not dates**. The timestamps you pass in determine only the timestamps that come
 back out. Inside, every step is just "the one after the previous one".
 
 Put that together with how the input is built, and the three common data problems separate out
@@ -293,13 +307,15 @@ cleanly:
 | **Irregular series** | No dates and no frequency: only the relative position of each step. `chronos-forecasting` does not insert the rows you are missing. | Reindex every series to a regular grid *before* forecasting, with NaN in the holes. Calendar effects go in as covariates. |
 | **Outliers** | Nothing detects or removes them. Standardisation followed by arcsinh compresses extremes, and the 0.01 / 0.99 quantiles cover rare events (but a single spike still moves the mean and standard deviation that the whole series is scaled by). | A value you *know* is a measurement error becomes NaN. A real extreme stays. |
 
-How much each one costs is a measurement, not an opinion.
+How much each one costs is a measurement, not an opinion. (For an independent test of what
+Chronos-2 does with a missing past target and with missing covariates, see [10].)
 
 ### The experiment
 
 There's one series (Spanish national load), one clean baseline, and five corruptions, tested with a
-rolling-origin backtest. It uses 20 forecast origins spaced a week apart, each one forecasting the
-next 24 hours from a 2,048-hour context. The corruption only touches the model's input, because the
+rolling-origin backtest. It uses 40 forecast origins nine days apart, so they cover a full year and
+every weekday, each one forecasting the next 24 hours from a 2,048-hour context. The corruption only
+touches the model's input, because the
 harness keeps the clean series intact, so cutoffs, actuals and metric scaling stay the same across
 scenarios. Each window's random generator is seeded from its own cutoff, so the gaps land on the
 same hours in every gap scenario.
@@ -321,16 +337,22 @@ same hours in every gap scenario.
 
 ![Figure 5: results/figures/00_messy_data_summary.png](../results/figures/00_messy_data_summary.png)
 
-*Figure 5. WQL change against clean data over 20 windows. Left: change in the mean. Right: the
+*Figure 5. WQL change against clean data over 40 windows. Left: change in the mean. Right: the
 typical window, as the geometric mean of the paired ratios.*
 
 | Scenario | Mean WQL change | Typical window | 95% interval | Worse in |
 | --- | --- | --- | --- | --- |
-| Spike set to NaN | +1.4% | +2.2% | [+0.4%, +4.3%] | 16 / 20 |
-| Gaps as NaN | +5.0% | +5.0% | [+0.3%, +10.3%] | 13 / 20 |
-| Spike (×3) | +7.3% | +11.8% | [+5.7%, +18.7%] | 16 / 20 |
-| Gaps as 0 | +11.8% | +23.1% | [+6.0%, +50.4%] | 13 / 20 |
-| **Rows dropped, `freq="h"`** | **+110.6%** | **+202.7%** | **[+82.5%, +375.3%]** | **16 / 20** |
+| Spike set to NaN | +0.7% | +2.0% | [+0.3%, +3.5%] | 26 / 40 |
+| Gaps as NaN | +2.1% | +6.7% | [+3.0%, +10.6%] | 30 / 40 |
+| Spike (×3) | +34.1% | +12.8% | [+4.3%, +24.7%] | 25 / 40 |
+| Gaps as 0 | +14.2% | +31.8% | [+13.6%, +57.5%] | 27 / 40 |
+| **Rows dropped, `freq="h"`** | **+104.1%** | **+208.0%** | **[+126.3%, +314.2%]** | **32 / 40** |
+
+The two middle columns answer different questions, and they can disagree. The mean change is the
+change in the average loss, which the worst windows dominate; the typical window is the geometric
+mean of the per-window ratios, in which every window counts the same. The spike is the row where
+they part: in most windows it costs a few percent (the median window loses 6%), and in one it
+multiplies the loss by 5.6, which is what lifts the mean to +34%.
 
 The findings come in the order of how much they should change what you do.
 
@@ -348,13 +370,13 @@ forecast. This is the one real trap in this API, and it explains why the reposit
 asserts a regular grid before every call, and why the scenario above has to bypass that wrapper to
 exist at all.
 
-**A sentinel zero costs more than four times what a NaN does**, +23.1% against +5.0% in a
+**A sentinel zero costs more than four times what a NaN does**, +31.8% against +6.7% in a
 typical window. Zero looks like a plausible demand reading, so the model treats a reporting outage
 as a national blackout, and the per-series standardisation gets dragged along with it. The cost of a
 NaN gap, by contrast, is roughly the cost of the information that is lost.
 
 **Replacing a known-bad value with NaN nearly erases it.** In a typical window the tripled value
-costs +11.8%, but the same value set to NaN costs only +2.2%. This is the cheapest data-quality
+costs +12.8%, but the same value set to NaN costs only +2.0%. This is the cheapest data-quality
 fix on the list, as long as you're sure it's an error and not a real peak you'll later be asked
 to forecast.
 
@@ -439,7 +461,8 @@ and it also runs the Part 2 evaluation against a seasonal naive baseline.
 Part 2 turns the anecdote from section 4 into a proper evaluation. It runs rolling-origin
 backtesting with the metrics the Chronos-2 paper uses (WQL, MASE, and a skill score against Seasonal
 Naive with bootstrap intervals), along with interval coverage, and compares the results against
-Seasonal Naive, AutoETS and Chronos-Bolt. It then takes up the two questions the group-ID table sets
+Seasonal Naive, AutoETS, MSTL, Chronos-Bolt and the grid operator's own published forecast. It then
+takes up the two questions the group-ID table sets
 up: how much context helps, and whether a series with three weeks of history is better forecast
 alone or in a group with its neighbours.
 
@@ -475,6 +498,11 @@ alone or in a group with its neighbours.
     https://huggingface.co/mistralai/Timestral-209M, `theforecastingcompany/t0-gamma`,
     https://huggingface.co/theforecastingcompany/t0-gamma, and `google/timesfm-3.0-pytorch`,
     https://huggingface.co/google/timesfm-3.0-pytorch
+13. Auer, A., Podest, P., Klotz, D., *et al.* (2025). *TiRex: Zero-Shot Forecasting Across Long and
+    Short Horizons with Enhanced In-Context Learning*. arXiv:2505.23719.
+    https://arxiv.org/abs/2505.23719
+14. Das, A., Kong, W., Sen, R. & Zhou, Y. (2023). *A decoder-only foundation model for time-series
+    forecasting* (TimesFM). arXiv:2310.10688. https://arxiv.org/abs/2310.10688
 
 **Suggested tags:** Time Series Forecasting · Machine Learning · Foundation Models · Python ·
 Deep Learning

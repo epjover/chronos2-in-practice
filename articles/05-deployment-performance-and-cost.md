@@ -1,4 +1,4 @@
-# Chronos-2 in Practice (5/5): Deployment, Performance and Monitoring
+# Chronos-2 in Practice (5/7): Deployment, Performance and Cost
 
 **A consumer GPU serves 216 series per second at 2,048 hours of context; eight CPU cores serve
 13. That is a 16.5× gap, against a 3.3× price gap, which settles the hardware question and
@@ -13,26 +13,32 @@ benchmark said 59×, and the reason it was wrong is the most useful lesson in th
 ---
 
 [Part 4](#) finished with a model that was ready to deploy and an adapter that came in at 4.6 MB.
-This part picks up from there, covering how fast it runs, where you can run it, what it costs, and
-how you find out when it stops working.
+This part picks up from there, covering how fast it runs, where you can run it and what it costs.
+How you find out when it stops working is Part 6.
 
 One framing note before the numbers. As of November 2026 AWS lists Chronos-2 in SageMaker
-JumpStart but sells no pay-per-call API for it. The weights are Apache-2.0 and the library is
+JumpStart but sells no pay-per-call API for it. The weights are Apache-2.0 [7] and the library is
 public, and every path below runs the model **in your own account** and bills you for the compute,
 whether or not a request arrives.
 That's the opposite of how a hosted LLM usually works, and it makes idle time, rather than latency,
 the dominant cost term for most forecasting workloads. (Hosted alternatives exist outside AWS. Google's
-BigQuery exposes TimesFM as the `AI.FORECAST` SQL function, and third-party services such as The
-Forecasting Company's API serve Chronos-2 per request, with the provider choosing the deployed
-variant and its limits. This article stays with the paths where you control the model.)
+BigQuery exposes TimesFM as the `AI.FORECAST` SQL function [10], and third-party services such as
+The Forecasting Company's API serve Chronos-2 per request [9], with the provider choosing the
+deployed variant and its limits. This article stays with the paths where you control the model.)
+
+**What was run, and what was only written.** The benchmarks and the FastAPI service were run and
+timed on the machine named below. The cost tables multiply those timings by published rates. The
+two AWS paths were not executed against an AWS account: the SageMaker script was run in its
+`--plan` mode and its handler is covered by offline tests of its JSON contract, and the AutoGluon Cloud script and the
+snippet shown for it follow the library's documentation and were never run. Each section says
+which is which. Treat the AWS code as a starting point that still has to meet a real account.
 
 - **Code:** [`bench/`](https://github.com/epjover/chronos2-in-practice/tree/main/bench),
   [`deploy/`](https://github.com/epjover/chronos2-in-practice/tree/main/deploy),
-  [`monitoring/`](https://github.com/epjover/chronos2-in-practice/tree/main/monitoring),
   [`scripts/cost_table.py`](https://github.com/epjover/chronos2-in-practice/blob/main/scripts/cost_table.py)
   : scripts rather than notebooks, because this is the part you run from a cron job.
-- **Data:** hourly Spanish load, 2018, for the latency benchmark and the monitoring replay;
-  `us-east-1` on-demand rates from the AWS Price List API.
+- **Data:** hourly Spanish load, 2018 [6], for the latency benchmark; `us-east-1` on-demand rates
+  from the AWS Price List API [2].
 - **Versions:** `chronos-forecasting==2.3.2`, `fastapi==0.162.0`, Python 3.11.
 - **Hardware:** Intel Core i9-12900K with 8 cores available to the process, PyTorch on 8
   threads; NVIDIA RTX 3070 (8 GB). Every timing below is the median of 30 calls on this machine,
@@ -108,7 +114,8 @@ lifting throughput.
 
 **Context is the hidden throughput cost.** On the GPU, quadrupling context from 512 to 2,048 hours
 cuts peak throughput from 777 to 216 series per second. Part 2 found that context beyond 1,024 hours
-bought about 1.4 points of skill, so this is what that trade costs on the other side.
+bought about 2.9 points of skill, inside its interval, so this is what that trade costs on the
+other side.
 
 **The small checkpoint runs more than three times faster and comes in roughly a quarter worse.**
 `chronos-2-small` is 3.3× faster on the GPU and 3.5× faster on the CPU at 2,048 hours. Part 1
@@ -141,8 +148,9 @@ created.**
 
 ### A container you run anywhere
 
-[`deploy/fastapi`](../deploy/fastapi/) is a FastAPI app that ships with a multi-stage Dockerfile,
-and the weights get baked in at build time, which means the container starts up offline. Every
+[`deploy/fastapi`](../deploy/fastapi/) is a FastAPI app [5] that ships with a multi-stage
+Dockerfile, and the weights get baked in at build time, which means the container starts up
+offline. This is the path that was run end to end: the numbers below are from the live service. Every
 request passes through the same `validate_and_prepare` checklist used in the notebooks, and every
 response carries a SHA-256 hash of the canonical model input.
 
@@ -193,13 +201,18 @@ uv run --group cloud python deploy/sagemaker/deploy_endpoint.py --delete --yes
 ```
 
 `--plan` is the default, so the script prints what it would create and what would keep billing, and
-it does nothing until you pass `--yes`.
+it does nothing until you pass `--yes`. Only `--plan` has been run for this series. The handler is
+covered by the repository's tests, which check its JSON contract against a stand-in model; the
+packaging, the IAM role and the endpoint creation have not met a real account, and the official
+notebook [4] is the reference for those.
 
 ### Nothing at all: AutoGluon Cloud
 
-[`deploy/autogluon_cloud`](../deploy/autogluon_cloud/) uses `TimeSeriesFoundationModel`, which
-needs no handler, no image and no training job. It offers the three shapes a forecasting
-workload takes:
+[`deploy/autogluon_cloud`](../deploy/autogluon_cloud/) uses `TimeSeriesFoundationModel` [3], which
+needs no handler, no image and no training job. The snippet below and the repository's script are
+written from the library's documentation and have not been executed (`autogluon.cloud` is not
+among the repository's dependencies), so read them as the shape of the API. It offers the three
+shapes a forecasting workload takes:
 
 ```python
 from autogluon.cloud import TimeSeriesFoundationModel
@@ -221,18 +234,18 @@ endpoint.delete_endpoint()
 ```
 
 Option (c) is the only one in this article that bills nothing while it's idle. It's CPU-only, and it
-pays a cold start on the first call after a quiet period (the official deployment guide puts it at
-30 to 60 seconds), but for a once-a-day forecast that's a trade most people would happily take.
+pays a cold start on the first call after a quiet period (the official deployment guide [4] puts it
+at 30 to 60 seconds), but for a once-a-day forecast that's a trade most people would happily take.
 
-AWS also lists Chronos-2 in SageMaker JumpStart (`pytorch-forecasting-chronos-2`), offering the same
-idea but through the console. Whichever option you pick, the endpoint belongs to you, and so does
+AWS also lists Chronos-2 in SageMaker JumpStart (model id `pytorch-forecasting-chronos-2` [4]),
+offering the same idea but through the console. Whichever option you pick, the endpoint belongs to you, and so does
 the bill.
 
 ### Two things that do not change with the path
 
 **The series you send are business data.** A national load curve is public, but a factory's load
 curve is a production schedule, and a store's hourly traffic is its revenue. Every managed path
-described above sends that data to an endpoint outside your network, and a forecast log (section 4)
+described above sends that data to an endpoint outside your network, and a forecast log (Part 6)
 keeps a copy of it. The weights are Apache-2.0 and the model never needs to call out anywhere (the
 FastAPI image starts with `HF_HUB_OFFLINE=1`), so you can run the stack entirely on-premise if you
 need to. Work out where the data is allowed to go before you decide where the model runs, because
@@ -251,7 +264,7 @@ job.
 
 Cost tables go stale fast, so this one is generated rather than typed by hand.
 [`scripts/fetch_cloud_prices.py`](../scripts/fetch_cloud_prices.py) reads the **AWS Price List Bulk
-API** (public, no credentials needed, and it creates nothing) and writes
+API** [2] (public, no credentials needed, and it creates nothing) and writes
 [`data/reference/cloud_prices.csv`](../data/reference/cloud_prices.csv), recording the SKU, the
 effective date and the offer-file version alongside every rate. The figures below come from offer
 version `20261111023957` for `us-east-1`, with rates effective 2026-11-01.
@@ -290,7 +303,7 @@ hourly rates. In reality `ml.g4dn.xlarge` carries a T4, which is an older and sl
 A10G in `ml.g5.xlarge`, so its row turns out to be the most optimistic one in the table. This
 benchmark can't settle which GPU is cheapest per forecast, but it does show that the cheapest GPU
 beats the cheapest 8-vCPU CPU instance by an order of magnitude. One external anchor: the
-Chronos-2 paper reports over 300 series per second on a single A10G, for a batch of 1,024 series
+Chronos-2 paper [1] reports over 300 series per second on a single A10G, for a batch of 1,024 series
 with 2,048 steps of context and a 64-step horizon. That is a larger batch and a longer horizon
 than anything measured here (the RTX 3070 reaches 216/s at 128 series, 2,048 hours of context and
 a 24-step horizon), so the two figures are not directly comparable, but they put the `ml.g5.xlarge`
@@ -303,7 +316,8 @@ measurement came from 8 cores, so quoting it against a 2-vCPU instance would fla
 smaller instance by roughly the ratio of cores.
 
 **Serverless avoids paying for idle time.** SageMaker Serverless Inference charges $0.00002 per
-GB-second of request duration, so at 6 GB and the measured single-request CPU latencies, one million
+GB-second of request duration [2], so at 6 GB and the measured single-request CPU latencies, one
+million
 single-series requests cost:
 
 | Checkpoint | Context | Seconds per request | USD per million requests |
@@ -314,7 +328,7 @@ single-series requests cost:
 | `chronos-2-small` | 2,048 | 0.032 | 3.88 |
 
 Those latencies come from 8 dedicated cores. AWS sizes a serverless endpoint's compute from the
-memory you choose and publishes no core count for it, so read the column as a lower bound, for the
+memory you choose and publishes no core count for it [8], so read the column as a lower bound, for the
 same reason the instance table sticks to 8 vCPUs.
 
 Per forecast, that comes out worse than any always-on instance, but what matters here is the
@@ -329,181 +343,6 @@ bill, not dollars per forecast.
 traffic is bursty or interactive with modest volume, go serverless. A single scheduled run per day,
 which is what day-ahead forecasting really amounts to, calls for a batch job that exits.
 
-## 4. Monitoring: the forecast arrives before the truth does
-
-A backtest tells you a model *was* good. Production asks whether it still is, and the two differ in
-a structural way, because in production the actuals arrive after the forecast, often much later.
-Everything in [`src/c2p/monitoring.py`](../src/c2p/monitoring.py) is built around that delay.
-
-```python
-from c2p.monitoring import (
-    append_log,
-    join_actuals,
-    log_predictions,
-    read_log,
-    retraining_alerts,
-    rolling_metrics,
-)
-
-rows = log_predictions(forecast, context, model_version="amazon/chronos-2@2.3.2", cutoff=cutoff)
-append_log(rows, "logs/predictions.csv")  # no actual column: it does not exist yet
-...
-joined = join_actuals(read_log("logs/predictions.csv"), observed, target="load_actual")
-rolling = rolling_metrics(joined, window=28, quantile_levels=(0.1, 0.9), nominal=0.8)
-alerts = retraining_alerts(rolling, wape_threshold=0.06)
-```
-
-A few of the design decisions are meant to be copied.
-
-**Log the input hash, not just the forecast.** `context_hash` is a stable digest of the exact frame
-the model saw, NaNs included. Six weeks later, when a forecast looks wrong, this hash lets you tell
-whether the model changed or the data changed. Without it those two causes look the same, and every
-incident turns into an argument.
-
-**Leave unresolved rows unresolved.** `join_actuals` keeps rows whose actual has not arrived,
-with NaN in `actual`. The share of resolved rows is a signal in its own right. If it falls, your
-data feed broke, and you want to know that before the error metric reacts a month later.
-
-**Alert once per episode, not once per day.** `retraining_alerts` adds a `first_breach` column, true
-only on the cutoff where a run of breaches starts. A threshold without this will page you every
-morning for a week, and then you'll mute it.
-
-[`monitoring/build_panel.py`](../monitoring/build_panel.py) demonstrates the loop by replaying 2018
-in fast-forward. Each of the 365 cutoffs is forecast from its own past and written to the log with
-no actual attached, and the actuals are joined afterwards (the same order of events as production,
-but with the waiting removed). It produces 8,760 logged forecasts across 365 distinct input hashes.
-
-![Figure 4: results/figures/09_monitoring_panel.png](../results/figures/09_monitoring_panel.png)
-
-*Figure 4. The panel an operator watches. Rolling WAPE over a trailing 28 cutoffs with the
-retraining threshold, and the achieved coverage of the nominal 80% interval. Red markers are
-cutoffs above the threshold.*
-
-| | Min | Median | Max |
-| --- | ---: | ---: | ---: |
-| rolling WAPE (28 cutoffs) | 2.65% | 4.22% | 6.75% |
-| 80% interval coverage | 55.1% | 77.5% | 87.1% |
-
-The rolling WAPE pools 28 days of absolute error over 28 days of load, so it differs from Part 2's
-per-window mean of 4.7%: the two agree on the level but differ in how the averaging is done.
-
-At a 6% threshold, **13 of 365 cutoffs breach, in 4 episodes**: one in late January, two in
-mid-February a day apart, and one in Christmas week. That clustering is the most useful thing in the figure, and it says more about the
-rule than about the model. These are cold snaps and a national holiday, recurring and predictable
-conditions, not drift. A fixed threshold on a seasonal series will page you every Christmas and
-teach your on-call to ignore it. So either set the threshold from the same season last year, or
-alert on the gap between this year and last year rather than on the level.
-
-The coverage panel is the one I'd act on first. The rolling coverage of the nominal 80%
-band averages 74.8% (73.4% over the whole year, as in Part 2), but it drops to 55% in winter, and that's the same under-coverage Part 2 found zero-shot and Part 4 made slightly
-worse through fine-tuning. The median holds up fine, but winter doesn't. Section 5 fixes it.
-
-**Input drift** is the complement (errors tell you something broke after the fact, while a shift
-in the inputs can be seen before the actuals land). Comparing the first quarter of 2018 with the
-last gives a mean shift of 0.03 reference standard deviations and 21.5% of current values
-outside the reference 10–90% range, against 20% expected by construction. Nothing moved. That
-is the answer you want from a drift check most of the time, and the reason to keep it cheap and
-explainable rather than clever.
-
-**The retraining rule, stated completely.** When the rolling WAPE over 28 cutoffs climbs above
-threshold for the first time in an episode, we train a new LoRA adapter on data up to the breach and
-evaluate it on the windows since the last deployment, then promote it only if the skill score's
-confidence interval excludes zero. Part 4's numbers set the expectation, since an adapter takes 5
-minutes and 4.6 MB to produce, so the expensive part of this loop is the evaluation rather than the
-training.
-
-## 5. Calibrating the intervals: the one fix the series owed
-
-Every part turned up the same defect, and none of them fixed it. On Spanish load, the 80% band
-covers only 73.4% of the hours (56% in December), while the levers used in Parts 2 to 4 (context,
-covariates, fine-tuning) all work on the median. **Conformalized quantile regression** (Romano et
-al., 2019) is the fix that targets the bands instead, and it needs no training. Over a period where
-the actuals are known, you measure how far each interval missed by, and then widen future intervals
-by the quantile of those misses so that calibration coverage comes out right. The adjustment is
-learned once per quantile pair and per horizon step, and applied as a post-processing step
-([`src/c2p/conformal.py`](../src/c2p/conformal.py)).
-
-The protocol is set up so that nothing can have seen 2018. We calibrate on the 184 day-ahead windows
-of the second half of 2017 (Part 4's validation period) and score on Part 2's 365 windows of 2018,
-through the same harness
-([`monitoring/calibrate_intervals.py`](../monitoring/calibrate_intervals.py)). There are two
-variants: an **additive** shift in megawatts, the textbook form for one series, and a **scaled**
-multiplier of the model's own interval width, the form that travels across series of different
-levels. In code, the calibrated model is the same `Forecaster` as before:
-
-```python
-from c2p.conformal import ConformalForecaster, calibrate
-from c2p.eval import backtest
-
-calibration_frame = backtest(model, series_up_to_2017, calibration_config)  # forecasts + actuals
-calibration = calibrate(calibration_frame, quantile_levels=config.quantile_levels, mode="scaled")
-calibrated = ConformalForecaster(model, calibration)  # same .predict(); wider where it has to be
-```
-
-| | WQL | 80% coverage | 98% coverage | WQL skill vs zero-shot [95% CI] | Worst month (80%) |
-| --- | ---: | ---: | ---: | --- | ---: |
-| zero-shot | 0.0388 | 73.4% | 93.6% | n/a | 56.1% (Dec) |
-| conformal, additive | 0.0387 | **83.2%** | **98.4%** | −5.9% [−6.9, −5.0] | 68.9% (Feb) |
-| conformal, scaled | 0.0386 | **83.5%** | **98.5%** | −4.1% [−4.8, −3.4] | 69.9% (Dec) |
-
-![Figure 5: results/figures/09_conformal_coverage.png](../results/figures/09_conformal_coverage.png)
-
-*Figure 5. Coverage of the 80% band by month of 2018, zero-shot against the two calibrated
-variants. The calibration lifts the whole curve by about ten points; it cannot change its
-shape.*
-
-
-
-**The bands are trustworthy now, and the median did not pay for it.** Coverage comes in at 83% and
-98%, a touch above nominal, which is what the method guarantees on a finite calibration set, and the
-mean WQL stays the same to the third decimal. One housekeeping step is built into the adjustment:
-widening the 80% band and the 98% band by different amounts can make quantiles cross (a 0.9 column
-below the 0.8 one), so `conformalize` sorts the quantile columns of every row afterwards, the
-rearrangement of Chernozhukov et al. (2010), which never worsens the pinball loss. The *typical* window does pay something: the skill
-score runs −4 to −6%, because on an ordinary day the wider band costs a little pinball loss, and
-only the bad days give that back. In the worst tenth of the zero-shot windows the calibrated WQL comes out
-lower (0.147 with the scaled variant against 0.152, the `WQL_worst_decile` column of
-`09_conformal_summary.csv`). That is the trade a reserve-margin decision wants, and a mean would
-hide it.
-
-**The adjustment is largest where the model is most overconfident, and that is interpretable.** The
-additive shift for the 80% band runs from 40–80 MW at hours 21–23 of the horizon up to 1,300–1,400
-MW at hours 8–9, because that is the morning ramp, local 06:00–09:00, where demand climbs fastest
-and the model's bands do not widen enough to admit it. A per-step calibration finds this on its own,
-but a single global factor would have widened the quiet evening by the same amount as the ramp.
-
-**A global shift fixes the average, not the season.** The figure shows this plainly. Calibrated
-on a half-year that contains December but not January or February, the correction over-covers
-summer at 90% and still under-covers winter at 69–75%. The next step isn't a bigger shift but a
-*conditional* one, calibrating by month, or letting the adjustment track the last few weeks of
-misses (adaptive conformal inference). This is the retraining loop of section 4, applied to the
-bands instead of the weights, and it's where I'd take this series next.
-
-## 6. The series, in one page
-
-Five articles, one dataset, one protocol. What moved the number, in order:
-
-| Lever | Gain | Measured as | Where |
-| --- | ---: | --- | --- |
-| Context 64 → 2,048 hours | +52 points | skill vs seasonal naive, Spanish load | Part 2 |
-| Covariates the market knows in advance | +49.5% | WQL vs univariate, EPF-DE | Part 3 |
-| TSO forecasts + past generation | +11.8% | WQL vs no covariates, Spanish price | Part 3 |
-| LoRA rank 8 on 2.5 years of Spanish electricity | +2.3% | WQL vs zero-shot, Spanish load | Part 4 |
-| Full fine-tune, 119M weights | +1.7% | WQL vs zero-shot, Spanish load | Part 4 |
-| GPU instead of 8 CPU cores | 16.5× | series per second, same model, threads set | Part 5 |
-| `chronos-2-small` instead of `chronos-2` | 3.3× faster, −24.8% | WQL vs base model, Spanish load | Part 5 |
-| Conformal calibration of the bands | 73.4% → 83.5% | coverage of the 80% band, WQL unchanged | Part 5 |
-
-The rows sit on different scales and different targets, and that's on purpose. What the table shows
-is the ordering, not the sum.
-
-And what didn't move it: a weekly seasonal naive baseline instead of a daily one, forecasting load jointly with price (−0.1%), calendar features added on top of a model that
-already reads the clock (−0.2%), and, on this dataset, the difference between Chronos-2 and the
-previous-generation Chronos-Bolt on a clean univariate series.
-
-The order matters more than any single row. Context and covariates are configuration; fine-tuning is
-a project; hardware is a purchase order. Most teams start with the third.
-
 ## Cheat sheet
 
 - Before any CPU number, print `torch.get_num_threads()` and set it yourself. Record the CPU
@@ -514,54 +353,35 @@ a project; hardware is a purchase order. Most teams start with the third.
 - Fetch prices from the Price List API and keep the offer version next to every number.
 - Prefer a batch job for a scheduled forecast, serverless for bursty low volume, a GPU endpoint
   for high steady volume, and write the delete command before the create command.
-- Log every forecast with its model version and input hash, then join the actuals later, and
-  alert once per episode, with a threshold that knows what month it is.
-- Calibrate the bands on last year before you publish an interval.
+- Say which of your deployment paths you have run and which you have only written.
 
-## Where this series would go next
+## What's next
 
-A few things I chose not to do, in case you want to.
-
-**Make the calibration seasonal.** Section 5 fixed the average coverage but left the shape alone, so
-summer stayed over-covered and winter stayed under. Calibrating by month, or adapting the shift to
-the last few weeks of misses, is the natural extension. The real test is whether it holds up in a
-January the calibration never saw.
-
-**Test the cold-start claim at scale.** Part 2 found that cross-learning added +2% to +4% when a new
-series had 72 to 504 hours of history and four related series shared the frame. Five Spanish cities
-make for a small frame, though. A more interesting test would be a retail chain opening its
-hundredth store.
-
-**Watch the field.** Chronos-2 led fev-bench when its paper came out in October 2025. Since then,
-TimesFM-3 (August 2026, non-commercial licence), t0-gamma and Mistral's Timestral (both October
-2026) have all claimed to beat it. The protocol in Part 2 is what to keep, and the model it describes can change. That's why
-the protocol was written down in the first place.
+The model is running and it has a price. Part 6 is about the day after: the log that lets you
+tell a model problem from a data problem, the alert that does not page you every Christmas, and
+the repair of the intervals that every part so far has found too narrow.
 
 ---
 
 ## References
 
-1. Ansari, A. F., *et al.* (2025). *Chronos-2: From Univariate to Universal Forecasting*, §5.4.
+1. Ansari, A. F., *et al.* (2025). *Chronos-2: From Univariate to Universal Forecasting*.
    arXiv:2510.15821. https://arxiv.org/abs/2510.15821
-2. Shchur, O., *et al.* (2025). *fev-bench*. arXiv:2509.26468. https://arxiv.org/abs/2509.26468
-3. AWS Price List Bulk API. https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/
-4. AutoGluon Cloud, *Time series foundation models*.
+2. AWS Price List Bulk API. https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/
+3. AutoGluon Cloud, *Time series foundation models*.
    https://auto.gluon.ai/cloud/stable/tutorials/foundation-model-timeseries.html
-5. *Deploy Chronos to Amazon SageMaker* (notebook).
+4. *Deploy Chronos to Amazon SageMaker* (notebook).
    https://github.com/amazon-science/chronos-forecasting/blob/main/notebooks/deploy-chronos-to-amazon-sagemaker.ipynb
-6. FastAPI. https://fastapi.tiangolo.com/
-7. Romano, Y., Patterson, E. & Candès, E. J. (2019). *Conformalized Quantile Regression*.
-   NeurIPS 2019. arXiv:1905.03222. https://arxiv.org/abs/1905.03222
-8. Chernozhukov, V., Fernández-Val, I. & Galichon, A. (2010). *Quantile and Probability Curves
-   Without Crossing*. Econometrica 78(3). https://doi.org/10.3982/ECTA7880
-9. Dataset: *Hourly energy demand generation and weather* (CC0).
+5. FastAPI. https://fastapi.tiangolo.com/
+6. Dataset: *Hourly energy demand generation and weather* (CC0).
    https://www.kaggle.com/datasets/nicholasjhana/energy-consumption-generation-prices-and-weather
-10. Model card: `amazon/chronos-2`. https://huggingface.co/amazon/chronos-2 (the A10G throughput
-    figure is from reference 1, with its footnote on batch, context and horizon).
-11. Amazon SageMaker AI, *Deploy models with Amazon SageMaker Serverless Inference* (memory size
-    and compute). https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html
-12. The Forecasting Company API, *Overview* (available models, among them `chronos-2`).
-    https://docs.retrocast.com/documentation
+7. Model card: `amazon/chronos-2`. https://huggingface.co/amazon/chronos-2
+8. Amazon SageMaker AI, *Deploy models with Amazon SageMaker Serverless Inference* (memory size
+   and compute). https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html
+9. The Forecasting Company API, *Overview* (available models, among them `chronos-2`).
+   https://docs.retrocast.com/documentation
+10. Google Cloud, *The AI.FORECAST function* (BigQuery, TimesFM).
+    https://cloud.google.com/bigquery/docs/reference/standard-sql/bigqueryml-syntax-ai-forecast
 
 **Suggested tags:** Time Series Forecasting · MLOps · Machine Learning · Foundation Models ·
 Python

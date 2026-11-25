@@ -3,7 +3,7 @@
 The articles promise that every number is read from a CSV in ``results/``. This script holds
 them to it without running a model:
 
-1. **Tables.** Every numeric table row of the five articles is rebuilt from the CSV files, with
+1. **Tables.** Every numeric table row of the articles is rebuilt from the CSV files, with
    each value rounded once from the stored number, and must appear in the article word for
    word. A value typed from a rounded printout (0.0185 read as "1.9%") fails here.
 2. **Code.** Every ``from c2p... import`` in a Python block must resolve, and every call to an
@@ -142,8 +142,10 @@ def article_2(r: Results) -> Iterator[str]:
     summary = r("02_model_summary").set_index("model")
     skill = r("02_skill_table").set_index("model")
     labels = {
+        "operator_forecast": "operator's forecast (reference)",
         "chronos-bolt": "chronos-bolt",
         "chronos-2": "chronos-2",
+        "mstl": "mstl",
         "seasonal_naive_weekly": "seasonal_naive (168 h)",
         "auto_ets": "auto_ets",
     }
@@ -163,8 +165,25 @@ def article_2(r: Results) -> Iterator[str]:
         f"| {pct(naive['WAPE'])}% | 0.0% | n/a |"
     )
     coverage = r("02_coverage").pivot_table(index="model", columns="nominal", values="achieved")
-    for model in ("chronos-2", "chronos-bolt", "seasonal_naive", "auto_ets"):
+    for model in ("chronos-2", "chronos-bolt", "mstl", "seasonal_naive", "auto_ets"):
         yield f"| {model} | {pct(coverage.loc[model, 0.8])}% | {pct(coverage.loc[model, 0.98])}% |"
+    reliability = r("02_reliability").set_index(["model", "level"])["observed"]
+    yield f"{pct(reliability[('chronos-2', 0.1)])}% of the actuals fall below its 0.1 quantile"
+    yield f"{pct(reliability[('chronos-2', 0.9)])}% below its 0.9 quantile"
+    by_step = r("02_error_by_step").set_index(["model", "step"])["WAPE"]
+    peak = by_step["chronos-2"]
+    yield f"peaks at {pct(peak.max())}% at step {int(peak.idxmax())}"
+    backtest = r("02_backtest_metrics")
+    versus_bolt = _skill_row(backtest, "chronos-2", "chronos-bolt")
+    yield (
+        f"Chronos-2's skill over Bolt is {spct(versus_bolt['skill'])}% with an interval of "
+        f"[{spct(versus_bolt['ci_low'])}, {spct(versus_bolt['ci_high'])}]"
+    )
+    versus_mstl = _skill_row(backtest, "chronos-2", "mstl")
+    yield (
+        f"{pct(versus_mstl['skill'], 0)}% lower than MSTL's "
+        f"[{pct(versus_mstl['ci_low'])}, {pct(versus_mstl['ci_high'])}]"
+    )
     sweep = r("03_context_sweep").pivot_table(index="context", columns="horizon", values="skill")
     for context, row in sweep.iterrows():
         yield f"| {int(context):,} | {pct(row[24])}% | {pct(row[168])}% |"
@@ -183,8 +202,23 @@ def article_2(r: Results) -> Iterator[str]:
     yield f"{pct(synth['skill'])}% worse"
     yield f"[{pct(synth['ci_high'])}%, {pct(synth['ci_low'])}%]"
     joint = r("04_multivariate_skill").set_index("target")
-    yield f"load changes by only {interval(joint.loc['load_actual'])}"
-    yield f"price improves by {interval(joint.loc['price_actual'])}"
+    yield f"load changes by {interval(joint.loc['load_actual'])}"
+    yield f"price by {interval(joint.loc['price_actual'])}"
+
+
+def _attribution(row: pd.Series) -> str:
+    """``+0.0038 [+0.0015, +0.0065]`` from an importance-summary row."""
+    return f"{signed(row['mean'], 4)} [{signed(row['ci_low'], 4)}, {signed(row['ci_high'], 4)}]"
+
+
+def _skill_row(metrics: pd.DataFrame, model: str, baseline: str) -> pd.Series:
+    """Skill of ``model`` against ``baseline`` on the 365 daily windows, weekly blocks."""
+    from c2p.eval import skill_table
+    from c2p.experiments import DAY_AHEAD_BLOCK
+
+    pair = metrics[metrics["model"].isin([model, baseline])]
+    table = skill_table(pair, baseline=baseline, metric="WQL", block_length=DAY_AHEAD_BLOCK)
+    return table.set_index("model").loc[model]
 
 
 def article_3(r: Results) -> Iterator[str]:
@@ -203,9 +237,23 @@ def article_3(r: Results) -> Iterator[str]:
     wql = r("05_price_ladder_metrics").groupby("model")["WQL"].mean()
     ladder = r("05_price_ladder_skill").set_index("model")
     yield f"| {half_up(wql['none'], 4)} | n/a | n/a |"
-    for rung in ("+calendar", "+TSO forecasts", "+past generation"):
+    for rung in ("+calendar", "+TSO forecasts", "+past generation", "TSO forecasts, no calendar"):
         wins = f"{pct(ladder.loc[rung, 'win_rate'], 0)}%"
         yield table_row(half_up(wql[rung], 4), interval(ladder.loc[rung]), wins)
+    ladder_metrics = r("05_price_ladder_metrics")
+    no_calendar = _skill_row(ladder_metrics, "TSO forecasts, no calendar", "+TSO forecasts")
+    yield (
+        f"by {pct(no_calendar['skill'])}% "
+        f"[{spct(no_calendar['ci_low'])}, {spct(no_calendar['ci_high'])}]"
+    )
+    generation = _skill_row(ladder_metrics, "+past generation", "TSO forecasts, no calendar")
+    yield f"the difference is {interval(generation)}"
+    columns = r("05_price_columns").set_index("measure")["value"]
+    yield f"a steady {half_up(columns['actual_minus_omie_mean'], 1)} EUR/MWh above it"
+    yield f"(standard deviation {half_up(columns['actual_minus_omie_std'], 1)})"
+    yield f"a correlation of {half_up(columns['actual_vs_omie_correlation'], 3)}"
+    yield f"on {int(columns['days_day_ahead_column_equal_all_hours'])} days of 2018"
+    yield f"of another {int(columns['days_day_ahead_column_equal_no_hour'])}"
     holidays = r("05_holiday_windows").set_index(["model", "windows"])
     for arm in ("+holiday flag only", "+calendar"):
         special = holidays.loc[(arm, "holiday windows")]
@@ -226,28 +274,61 @@ def article_3(r: Results) -> Iterator[str]:
         f"| LEAK: the target itself as known-future | {interval(target)} "
         f"| {pct(target['win_rate'], 0)}% |"
     )
-    cheap = r("06_covariate_importance").groupby(["player", "method"])["importance"].mean()
-    shapley = r("06_covariate_shapley").groupby("player")["shapley"].mean()
-    for player in ("calendar", "load forecast", "wind forecast", "solar forecast"):
-        yield (
-            f"| {player} | {negative(cheap[(player, 'Ablation')], 5)} "
-            f"| {negative(cheap[(player, 'Permutation')], 5)} | {negative(shapley[player], 5)} |"
+    weekday_wql = r("05_categorical_metrics").groupby("model")["WQL"].mean()
+    weekday = r("05_categorical_skill").set_index("model")
+    for arm, label in (
+        ("+weekday as a number", "a number, 0 to 6"),
+        ("+weekday as a category", "a category, seven labels"),
+    ):
+        yield table_row(label, half_up(weekday_wql[arm], 4), interval(weekday.loc[arm]))
+    load = r("05_operator_metrics").groupby("model")[["WQL", "WAPE", "coverage_80"]].mean()
+    point = r("05_operator_point_skill").set_index("model")
+    arms = {
+        "history only": "Chronos-2, history only",
+        "operator forecast as covariate": "Chronos-2, operator forecast as a covariate",
+        "operator forecast, corrected": "Chronos-2 on the operator's errors",
+    }
+    for arm, label in arms.items():
+        yield table_row(
+            label,
+            half_up(load.loc[arm, "WQL"], 4),
+            f"{pct(load.loc[arm, 'WAPE'], 2)}%",
+            f"{pct(load.loc[arm, 'coverage_80'])}%",
+            interval(point.loc[arm]),
         )
+    operator = load.loc["operator forecast"]
+    yield table_row(
+        "The operator's forecast",
+        half_up(operator["WQL"], 4),
+        f"{pct(operator['WAPE'], 2)}%",
+        "n/a",
+        "n/a",
+    )
+    corrected = r("05_operator_skill").set_index("model").loc["operator forecast, corrected"]
+    yield (
+        f"is {pct(corrected['skill'])}% "
+        f"[{spct(corrected['ci_low'])}, {spct(corrected['ci_high'])}] below the operator's"
+    )
+    cheap = r("06_covariate_importance_summary").set_index(["player", "method"])
+    shapley = r("06_covariate_shapley_summary").set_index("player")
+    for player in ("wind forecast", "load forecast", "solar forecast", "calendar"):
+        cells = [
+            _attribution(cheap.loc[(player, "Ablation")]),
+            _attribution(cheap.loc[(player, "Permutation")]),
+            _attribution(shapley.loc[player]),
+        ]
+        yield table_row(player, *cells)
+    yield table_row("all four together", "n/a", "n/a", _attribution(shapley.loc["all four"]))
     segments = {
         "lags 25-168": "lags 25–168 (rest of the week)",
         "lags 169-672": "lags 169–672 (rest of four weeks)",
         "lags 1-24": "lags 1–24 (the last day)",
         "lags 673+": "lags 673+ (older)",
     }
-    context = r("06_context_shapley").groupby("player")["shapley"].mean()
+    context = r("06_context_shapley_summary").set_index("player")
     for key, label in segments.items():
-        yield f"| {label} | {half_up(context[key], 4)} |"
-    ratio = context.sum() / shapley.sum()  # the text rounds it to "about twenty-five times"
-    yield (
-        "about twenty-five times as much as the covariates"
-        if 22.5 <= ratio < 27.5
-        else f"a context-to-covariate ratio of about {ratio:.0f} times, not twenty-five"
-    )
+        yield table_row(label, _attribution(context.loc[key]))
+    yield table_row("the whole context", _attribution(context.loc["whole context"]))
     price = r("06_what_if").groupby("wind_factor")["predictions"].mean()
     yield f"| Operator's forecast | {half_up(price[1.0], 2)} EUR/MWh |"
     yield f"| Wind × 1.5 | {half_up(price[1.5], 2)} ({signed(price[1.5] - price[1.0], 2)}) |"
@@ -317,7 +398,7 @@ def _skill_against(metrics: pd.DataFrame, model: str, baseline: pd.Series) -> fl
 
 
 def article_5(r: Results) -> Iterator[str]:
-    """Throughput, the small checkpoint, service latency, costs, monitoring and calibration."""
+    """Throughput, the cheaper variants, service latency and costs."""
     devices = {"cuda": "RTX 3070", "cpu": "8 CPU cores"}
     names = {"amazon/chronos-2": "chronos-2", "autogluon/chronos-2-small": "chronos-2-small"}
     for model, name in names.items():
@@ -377,6 +458,15 @@ def article_5(r: Results) -> Iterator[str]:
             half_up(row["seconds_per_request"], 3),
             half_up(row["usd_per_million_requests"], 2),
         )
+    offer = pd.read_csv(r.folder.parent / "data" / "reference" / "cloud_prices.csv").iloc[0]
+    yield (
+        f"offer version {offer['offer_version']} for us-east-1, "
+        f"with rates effective {str(offer['effective_date'])[:10]}"
+    )
+
+
+def article_6(r: Results) -> Iterator[str]:
+    """The monitoring replay and the static and adaptive calibration of the intervals."""
     rolling = r("09_monitoring_rolling")
     wape, cov = rolling["wape"], rolling["coverage"]
     yield table_row(
@@ -396,6 +486,8 @@ def article_5(r: Results) -> Iterator[str]:
         "zero-shot": "zero-shot",
         "conformal_additive": "conformal, additive",
         "conformal_scaled": "conformal, scaled",
+        "conformal_rolling": "conformal, rolling pool",
+        "conformal_aci": "conformal, ACI",
     }
     for key, label in labels.items():
         s, w = summary.loc[key], worst.loc[key]
@@ -410,15 +502,22 @@ def article_5(r: Results) -> Iterator[str]:
             f"{pct(w['coverage'])}% ({month})",
         )
     tail = summary["WQL_worst_decile"]
+    yield f"({half_up(tail['conformal_aci'], 3)} with ACI against {half_up(tail['zero-shot'], 3)})"
+    monthly = months.pivot_table(index="period", columns="model", values="coverage")
+    january, february = monthly.loc["2018-01"], monthly.loc["2018-02"]
     yield (
-        f"({half_up(tail['conformal_scaled'], 3)} with the scaled variant "
-        f"against {half_up(tail['zero-shot'], 3)}"
+        f"go from {pct(january['conformal_additive'])}% and "
+        f"{pct(february['conformal_additive'])}% to {pct(january['conformal_rolling'])}% and "
+        f"{pct(february['conformal_rolling'])}% with the rolling pool, and to "
+        f"{pct(january['conformal_aci'])}% and {pct(february['conformal_aci'])}% with ACI"
     )
-    yield f"| 3.3× faster, {spct(k['skill'])}% |"
-    offer = pd.read_csv(r.folder.parent / "data" / "reference" / "cloud_prices.csv").iloc[0]
+    aci, static, raw = (
+        monthly[name] for name in ("conformal_aci", "conformal_additive", "zero-shot")
+    )
     yield (
-        f"offer version {offer['offer_version']} for us-east-1, "
-        f"with rates effective {str(offer['effective_date'])[:10]}"
+        f"ACI stays between {pct(aci.min())}% and {pct(aci.max())}%, where the static correction "
+        f"ran from {pct(static.min())}% to {pct(static.max())}% and the uncorrected model from "
+        f"{pct(raw.min())}% to {pct(raw.max())}%"
     )
 
 
@@ -428,6 +527,7 @@ EXPECTED: dict[str, Callable[[Results], Iterator[str]]] = {
     "03": article_3,
     "04": article_4,
     "05": article_5,
+    "06": article_6,
 }
 
 # --- Checks ---------------------------------------------------------------------------------
@@ -501,7 +601,7 @@ def check_code(article: str, text: str) -> list[str]:
 
 
 def audit(root: Path | None = None) -> list[str]:
-    """Run every check on the five articles and return the problems found."""
+    """Run every check on the articles and return the problems found."""
     root = root if root is not None else find_repo_root()
     results = Results(root)
     problems: list[str] = []

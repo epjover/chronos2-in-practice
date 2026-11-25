@@ -56,18 +56,25 @@ def daily_totals(
     offset: pd.Timedelta = DAY_OFFSET,
     steps_per_day: int = STEPS_PER_DAY,
 ) -> pd.DataFrame:
-    """Sum the hourly ``columns`` of a series frame into days; incomplete days are dropped.
+    """Sum the hourly ``columns`` of a series frame into days, on a regular daily grid.
 
     A day is the ``steps_per_day`` rows whose ``timestamp + offset`` fall on the same date, and
-    its row is stamped with that date. A day with fewer rows or with a missing value has no
-    total: it is left out rather than under-counted, so check the result for gaps.
+    its row is stamped with that date. A day with a missing value has a NaN total rather than
+    an under-counted one. The partial days at the two ends of a series (fewer than
+    ``steps_per_day`` rows) are dropped, so the result starts and ends on a complete day.
     """
     columns = [columns] if isinstance(columns, str) else list(columns)
     keyed = frame[[ID_COL, *columns]].assign(**{TIMESTAMP_COL: _day(frame[TIMESTAMP_COL], offset)})
     grouped = keyed.groupby([ID_COL, TIMESTAMP_COL], sort=True)
     totals = grouped[columns].sum(min_count=steps_per_day)
-    complete = grouped[columns[0]].size() == steps_per_day
-    return totals[complete].dropna().reset_index()
+    totals["_rows"] = grouped[columns[0]].size()
+    totals = totals.reset_index()
+    full = totals["_rows"] == steps_per_day
+    by_series = full.groupby(totals[ID_COL])
+    # Keep from the first complete day to the last one of each series.
+    inside = by_series.cummax() & by_series.transform(lambda day: day[::-1].cummax()[::-1])
+    totals.loc[~full, columns] = np.nan
+    return totals.loc[inside].drop(columns="_rows").reset_index(drop=True)
 
 
 def aggregate_forecasts(

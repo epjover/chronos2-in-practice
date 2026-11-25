@@ -56,27 +56,18 @@ def hourly_forecast(spread: float = 2.0) -> pd.DataFrame:
     return frame
 
 
-def test_daily_totals_group_the_delivery_day_and_drop_incomplete_days() -> None:
+def test_daily_totals_keep_a_regular_grid_and_drop_the_partial_days_at_the_ends() -> None:
     frame = hourly_frame(3)
-    frame = pd.concat(
-        [
-            frame,
-            frame.iloc[:5].assign(
-                **{
-                    TIMESTAMP_COL: frame[TIMESTAMP_COL].max()
-                    + pd.to_timedelta(np.arange(1, 6), "h")
-                }
-            ),
-        ]
+    tail = frame.iloc[:5].assign(
+        **{TIMESTAMP_COL: frame[TIMESTAMP_COL].max() + pd.to_timedelta(np.arange(1, 6), "h")}
     )
-    frame.loc[frame.index[30], "y"] = np.nan  # a missing hour in the second day
-    totals = daily_totals(frame.reset_index(drop=True), "y")
-    assert totals[TIMESTAMP_COL].tolist() == [
-        pd.Timestamp("2018-01-02"),
-        pd.Timestamp("2018-01-04"),
-    ]
-    first_day = hourly_frame(3)["y"].iloc[:24].sum()
-    assert totals["y"].iloc[0] == pytest.approx(first_day)
+    frame = pd.concat([frame, tail], ignore_index=True)
+    frame.loc[30, "y"] = np.nan  # a missing hour in the second day
+    totals = daily_totals(frame, "y")
+    days = pd.date_range("2018-01-02", periods=3, freq="D")
+    assert totals[TIMESTAMP_COL].tolist() == list(days)  # the five-hour fourth day is dropped
+    assert totals["y"].iloc[0] == pytest.approx(hourly_frame(3)["y"].iloc[:24].sum())
+    assert totals["y"].notna().tolist() == [True, False, True]  # no under-counted total
 
 
 def test_comonotonic_totals_sum_every_quantile() -> None:

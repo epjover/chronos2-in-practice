@@ -519,6 +519,20 @@ def article_6(r: Results) -> Iterator[str]:
         f"ran from {pct(static.min())}% to {pct(static.max())}% and the uncorrected model from "
         f"{pct(raw.min())}% to {pct(raw.max())}%"
     )
+    december = monthly.loc["2018-12"]
+    assert all(
+        monthly[name].idxmin() == "2018-12" for name in ("conformal_rolling", "conformal_aci")
+    )
+    yield (
+        f"at {pct(december['conformal_rolling'])}% for the rolling pool and "
+        f"{pct(december['conformal_aci'])}% for ACI, as it was for the uncorrected model at "
+        f"{pct(december['zero-shot'])}%"
+    )
+    assert static.idxmin() == "2018-02"
+    yield (
+        f"its worst month in February, at {pct(static.min())}%, with December a close second at "
+        f"{pct(december['conformal_additive'])}%"
+    )
 
 
 EXPECTED: dict[str, Callable[[Results], Iterator[str]]] = {

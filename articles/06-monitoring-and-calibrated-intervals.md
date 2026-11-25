@@ -233,8 +233,10 @@ to 81.5% and 79.5% with ACI. Across the twelve months ACI stays between 74.0% an
 static correction ran from 68.9% to 90.6% and the uncorrected model from 56.1% to 82.8%. Its yearly
 coverage is 79.8% against a nominal 80%.
 
-**December is still the worst month for every variant**, at 74%. The Christmas weeks are days no
-recent window resembles, and a rule that learns from the last few weeks arrives late by
+**December is still the worst month of both adaptive variants**, at 74.2% for the rolling pool and
+74.0% for ACI, as it was for the uncorrected model at 56.1%. (The static additive correction has
+its worst month in February, at 68.9%, with December a close second at 69.3%.) The Christmas weeks
+are days no recent window resembles, and a rule that learns from the last few weeks arrives late by
 construction. An adaptive calibration narrows the gap that a holiday opens; it does not close it.
 That is a job for a covariate (Part 3's holiday flag), not for a wider band.
 

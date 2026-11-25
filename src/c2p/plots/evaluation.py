@@ -3,8 +3,9 @@
 Three charts answer the three questions a backtest raises, in order: *which data did each
 forecast see* (:func:`plot_backtest_windows`), *is the model better than the baselines, and by
 enough to believe it* (:func:`plot_skill_scores`), and *are the prediction intervals honest*
-(:func:`plot_coverage`). A fourth, :func:`plot_what_if`, overlays the forecasts of one window
-under different inputs (part 3).
+(:func:`plot_coverage`). :func:`plot_reliability` extends the last question from two intervals
+to every quantile level, and :func:`plot_error_by_step` shows where in the horizon the error
+sits. :func:`plot_what_if` overlays the forecasts of one window under different inputs (part 3).
 
 They reuse the shared style of :mod:`c2p.plotting`, including its private axis helpers, so that
 a figure drawn here is indistinguishable from one drawn there; the alternative, restating the
@@ -45,6 +46,8 @@ __all__ = [
     "coverage_long",
     "plot_backtest_windows",
     "plot_coverage",
+    "plot_error_by_step",
+    "plot_reliability",
     "plot_skill_scores",
     "plot_what_if",
     "window_schedule",
@@ -435,4 +438,95 @@ def plot_what_if(
         if ylabel is not None:
             ax.set_ylabel(ylabel)
         _legend_above(ax, handles, labels, title)
+    return ax
+
+
+# --- Reliability by level, error by horizon step -------------------------------------------
+
+
+def plot_reliability(
+    reliability: pd.DataFrame,
+    *,
+    colors: Mapping[str, str] = MODEL_COLORS,
+    title: str | None = None,
+    ax: Axes | None = None,
+) -> Axes:
+    """Calibration at every quantile level: observed frequency minus the level, per model.
+
+    ``reliability`` is the output of ``c2p.eval.reliability_table``: ``model``, ``level`` and
+    ``observed`` (the share of actuals at or below that quantile). The y axis is the gap in
+    percentage points, so a calibrated model sits on the zero line. A curve above zero on the
+    left and below it on the right is the signature of intervals that are too narrow: too many
+    actuals under the low quantiles and too many over the high ones.
+    """
+    required = ["model", "level", "observed"]
+    missing = [column for column in required if column not in reliability.columns]
+    if missing:
+        raise ValueError(f"reliability is missing the columns {missing}.")
+    if reliability.empty:
+        raise ValueError("reliability is empty.")
+    models = list(dict.fromkeys(reliability["model"]))
+    palette = assign_colors(models, fixed=colors)
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 4.2), layout="constrained")
+        handles = []
+        for model in models:
+            rows = reliability.loc[reliability["model"] == model].sort_values("level")
+            gap = 100.0 * (rows["observed"] - rows["level"])
+            (line,) = ax.plot(
+                rows["level"], gap, color=palette[model], linewidth=LINE_WIDTH, marker="o", ms=4.5
+            )
+            handles.append(line)
+        ax.axhline(0.0, color=INK_SECONDARY, linewidth=1.0, linestyle=(0, (4, 3)), zorder=1)
+        _style_axes(ax, grid="y")
+        ax.set_xticks(sorted(reliability["level"].unique()))
+        ax.xaxis.set_major_formatter(lambda x, _: f"{x:.0%}")
+        ax.yaxis.set_major_formatter(lambda y, _: f"{y:+.0f}")
+        ax.set_xlabel("Quantile level")
+        ax.set_ylabel("Actuals at or below the quantile,\npoints above or below the level")
+        _legend_above(ax, handles, models, title)
+    return ax
+
+
+def plot_error_by_step(
+    by_step: pd.DataFrame,
+    *,
+    metric: str = "WQL",
+    colors: Mapping[str, str] = MODEL_COLORS,
+    title: str | None = None,
+    xlabel: str = "Steps ahead",
+    ax: Axes | None = None,
+) -> Axes:
+    """Error against the horizon step, one line per model.
+
+    ``by_step`` is the output of ``c2p.eval.error_by_step``: ``model``, ``step`` and the metric
+    columns, each a share of the level at that step. A flat line is a model whose error does
+    not grow with the lead time; a bump is an hour of the day it finds hard.
+    """
+    required = ["model", "step", metric]
+    missing = [column for column in required if column not in by_step.columns]
+    if missing:
+        raise ValueError(f"by_step is missing the columns {missing}.")
+    if by_step.empty:
+        raise ValueError("by_step is empty.")
+    models = list(dict.fromkeys(by_step["model"]))
+    palette = assign_colors(models, fixed=colors)
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 4.2), layout="constrained")
+        handles = []
+        for model in models:
+            rows = by_step.loc[by_step["model"] == model].sort_values("step")
+            (line,) = ax.plot(
+                rows["step"], rows[metric], color=palette[model], linewidth=LINE_WIDTH
+            )
+            handles.append(line)
+        _style_axes(ax, grid="y")
+        ax.set_ylim(bottom=0.0)
+        ax.set_xlim(by_step["step"].min(), by_step["step"].max())
+        ax.yaxis.set_major_formatter(lambda y, _: f"{y:.0%}")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(f"{metric} at that step")
+        _legend_above(ax, handles, models, title)
     return ax

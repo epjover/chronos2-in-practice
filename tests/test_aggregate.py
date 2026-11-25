@@ -84,7 +84,7 @@ def test_comonotonic_totals_sum_every_quantile() -> None:
     assert totals[PREDICTION_COL].tolist() == [240.0, 240.0]
     assert totals[quantile_col(0.1)].tolist() == [240.0 - 48.0] * 2
     assert totals[quantile_col(0.9)].tolist() == [240.0 + 48.0] * 2
-    assert totals[ACTUAL_COL].tolist() == [264.0, 264.0]
+    assert ACTUAL_COL not in totals.columns  # evaluate() joins the daily actuals
 
 
 def test_independent_totals_add_the_spread_in_quadrature() -> None:

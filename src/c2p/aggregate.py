@@ -26,7 +26,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from c2p.eval import ACTUAL_COL, CUTOFF_COL, MODEL_COL, WINDOW_COL
+from c2p.eval import CUTOFF_COL, MODEL_COL, WINDOW_COL
 from c2p.schema import (
     ID_COL,
     PREDICTION_COL,
@@ -93,7 +93,8 @@ def aggregate_forecasts(
     ``timestamp`` is the day, the ``cutoff`` is the day before the window's first day, the
     point forecast is the sum of the hourly point forecasts and the quantiles follow
     ``method`` (see the module docstring). Days of the horizon with fewer than
-    ``steps_per_day`` rows are dropped. ``name`` is the model name of the result.
+    ``steps_per_day`` rows are dropped. ``name`` is the model name of the result. The frame
+    carries no ``actual`` column: ``evaluate`` attaches the daily actuals itself.
     """
     if method not in ("comonotonic", "independent"):
         raise ValueError(f"method must be 'comonotonic' or 'independent', got {method!r}.")
@@ -118,15 +119,5 @@ def aggregate_forecasts(
     first_day = totals.groupby(keys, sort=False)[TIMESTAMP_COL].transform("min")
     totals[CUTOFF_COL] = first_day - pd.Timedelta(days=1)
     totals[MODEL_COL] = name
-    if ACTUAL_COL in forecasts.columns:
-        actual = forecasts[[*keys, ACTUAL_COL]].assign(
-            **{TIMESTAMP_COL: _day(forecasts[TIMESTAMP_COL], offset)}
-        )
-        actual = actual.groupby([*keys, TIMESTAMP_COL], sort=True)[ACTUAL_COL].sum(
-            min_count=steps_per_day
-        )
-        totals = totals.merge(actual.reset_index(), on=[*keys, TIMESTAMP_COL], how="left")
     ordered = [ID_COL, TIMESTAMP_COL, TARGET_NAME_COL, PREDICTION_COL, *columns]
-    extra = [WINDOW_COL, CUTOFF_COL, MODEL_COL]
-    extra += [ACTUAL_COL] if ACTUAL_COL in totals.columns else []
-    return totals[[*ordered, *extra]]
+    return totals[[*ordered, WINDOW_COL, CUTOFF_COL, MODEL_COL]]

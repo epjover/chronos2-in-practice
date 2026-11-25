@@ -27,7 +27,8 @@ Usage::
 
     uv run python bench/bench_cpu_gpu.py --device cpu
     uv run python bench/bench_cpu_gpu.py --device cuda
-    uv run python bench/bench_cpu_gpu.py --device cuda --dtype bfloat16 --name bench_latency_bf16
+    uv run python bench/bench_cpu_gpu.py --device cuda --dtype bfloat16 \\
+        --name bench_latency_cuda_bf16
 
 Results go to ``results/bench_latency.csv`` (one row per cell) and
 ``results/bench_latency_samples.csv`` (one row per timed call); ``--fast`` runs a reduced sweep

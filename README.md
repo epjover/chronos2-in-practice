@@ -10,7 +10,9 @@ series foundation model: a single ~120M-parameter model that returns probabilist
 univariate, multivariate and covariate-informed series without training on your data. The series
 follows one real dataset (hourly Spanish electricity demand and prices, 2015-2018) from a first
 forecast to production: data checks, evaluation against baselines, covariates, fine-tuning,
-deployment and monitoring. Every experiment in the articles can be rerun from this repository.
+deployment, monitoring and calibrated intervals, and then beyond it: totals, daily data, a
+panel of a thousand stores and the model's embeddings. Every experiment in the articles can be
+rerun from this repository.
 
 ## The series
 
@@ -20,10 +22,13 @@ deployment and monitoring. Every experiment in the articles can be rerun from th
 | 2 | Evaluation, Context Length, Multivariate and Cold Start (coming soon) | [`02_evaluation`](notebooks/02_evaluation.ipynb), [`03_context_length`](notebooks/03_context_length.ipynb), [`04_multivariate_coldstart`](notebooks/04_multivariate_coldstart.ipynb) |
 | 3 | Covariates and What Drives the Forecast (coming soon) | [`05_covariates`](notebooks/05_covariates.ipynb), [`06_explainability`](notebooks/06_explainability.ipynb) |
 | 4 | LoRA vs Full Fine-Tuning (coming soon) | [`07_finetune_lora`](notebooks/07_finetune_lora.ipynb), [`08_finetune_full`](notebooks/08_finetune_full.ipynb) (GPU) |
-| 5 | Deployment, Performance and Monitoring (coming soon) | [`bench/`](bench/), [`deploy/`](deploy/), [`monitoring/`](monitoring/), [`scripts/cost_table.py`](scripts/cost_table.py) |
+| 5 | Deployment, Performance and Cost (coming soon) | [`bench/`](bench/), [`deploy/`](deploy/), [`scripts/cost_table.py`](scripts/cost_table.py) |
+| 6 | Monitoring and Calibrated Intervals (coming soon) | [`monitoring/`](monitoring/), [`src/c2p/monitoring.py`](src/c2p/monitoring.py), [`src/c2p/conformal.py`](src/c2p/conformal.py) |
+| 7 | Beyond One Hourly Series (coming soon) | [`10_frequency_and_panel`](notebooks/10_frequency_and_panel.ipynb), [`11_embeddings`](notebooks/11_embeddings.ipynb), [`scripts/series_summary.py`](scripts/series_summary.py) |
 
 Everything runs on a CPU except the fine-tuning notebooks `07` and `08`, which need a GPU (local
-or Colab).
+or Colab). There is no notebook `09`: the results named `09_*` come from the scripts of parts 5
+and 6, and `12_*` from `scripts/series_summary.py`.
 
 ## Articles
 
@@ -37,7 +42,7 @@ uv run python scripts/render_article_tables.py
 ```
 
 "Every number is read from `results/`" is checked, not promised. `scripts/audit_articles.py`
-rebuilds every numeric table row of the five drafts from the CSV files, rounding each value once
+rebuilds every numeric table row of the seven drafts from the CSV files, rounding each value once
 from the stored number, and requires the row to appear in the article as written. It also binds
 every `c2p` call in the articles' code blocks to the real signature, so a snippet cannot omit a
 required argument. The same checks run in the fast test suite:
@@ -136,6 +141,8 @@ export breaks a plain `pip install -r` on Linux and Colab.
 | `06_explainability` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/06_explainability.ipynb) |
 | `07_finetune_lora` (GPU) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/07_finetune_lora.ipynb) |
 | `08_finetune_full` (GPU) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/08_finetune_full.ipynb) |
+| `10_frequency_and_panel` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/10_frequency_and_panel.ipynb) |
+| `11_embeddings` | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/epjover/chronos2-in-practice/blob/main/notebooks/11_embeddings.ipynb) |
 
 The notebooks import helpers from this repository, so on Colab run this first (it keeps Colab's
 own PyTorch build):
@@ -159,40 +166,48 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── config.py           # paths, fast mode, seeds, device selection
 │   ├── schema.py           # column names, quantile levels, Forecaster protocol
 │   ├── data.py             # loading and the data checklist (validate_and_prepare)
-│   ├── eval.py             # rolling-origin backtests, metrics, skill scores
-│   ├── models.py           # Chronos-2 forecaster
-│   ├── baselines.py        # Seasonal Naive, AutoETS, Chronos-Bolt
+│   ├── eval.py             # rolling-origin backtests, metrics, skill scores, block bootstrap
+│   ├── experiments.py      # the protocol every article shares: periods, windows, columns
+│   ├── models.py           # Chronos-2 forecaster; loading in float32 or half precision
+│   ├── baselines.py        # Seasonal Naive, AutoETS, MSTL, Chronos-Bolt, a published forecast
+│   │                       #   and the model that forecasts its errors
+│   ├── explain.py          # ablation, permutation, exact Shapley values, occlusion
 │   ├── finetune.py         # splits, LoRA and full fine-tuning
 │   ├── fev_tasks.py        # published fev-bench tasks, translated to our protocol
 │   ├── monitoring.py       # prediction log, delayed actuals, rolling metrics, alerts
-│   ├── conformal.py        # conformalized quantile regression: honest intervals after the fact
+│   ├── conformal.py        # conformal calibration of the intervals, static and adaptive
+│   ├── aggregate.py        # hourly forecasts into daily totals, and what that assumes
+│   ├── embeddings.py       # the encoder's embeddings: analogs, probes, anomaly scores
 │   ├── plotting.py         # article figures
-│   ├── plots/              # figures specific to one article (architecture, evaluation, production)
+│   ├── plots/              # figures specific to one article (architecture and decision path,
+│   │                       #   evaluation, production, embeddings)
 │   │   └── fonts/          # Excalifont (OFL 1.1), for the hand-drawn architecture diagram
 │   └── results.py          # saving and loading experiment CSV files
-├── notebooks/              # 00_data_checks ... 08_finetune_full
+├── notebooks/              # 00_data_checks ... 08_finetune_full, 10_frequency_and_panel, 11_embeddings
 ├── examples/
 │   └── forecast_your_series.py  # checklist + zero-shot forecast + backtest on your CSV
 ├── bench/
 │   ├── bench_cpu_gpu.py    # latency and throughput vs batch, context, checkpoint, device (30 timed calls per cell, percentiles, raw samples)
 │   ├── summarise_stability.py  # within-run spread and run-to-run drift of those timings
-│   └── small_vs_base_accuracy.py  # chronos-2-small vs chronos-2 on the day-ahead protocol
+│   └── cheaper_variants_accuracy.py  # chronos-2-small and half precision vs chronos-2, same protocol
 ├── deploy/
 │   ├── fastapi/            # the container you run: app.py, Dockerfile, smoke_test.py
 │   ├── sagemaker/          # a managed endpoint you own: inference.py + lifecycle script
 │   └── autogluon_cloud/    # batch, real-time or serverless, with no handler to write
 ├── monitoring/
 │   ├── build_panel.py      # replays 2018 as production and builds the alert panel
-│   └── calibrate_intervals.py  # calibrates the bands on 2017-H2, re-scores 2018
-├── articles/               # the five drafts; medium/ holds the table-as-image copies
+│   └── calibrate_intervals.py  # calibrates the bands on 2017-H2 (once, and adaptively), re-scores 2018
+├── articles/               # the seven drafts; medium/ holds the table-as-image copies
 ├── results/                # one CSV per experiment + figures/
 ├── scripts/
 │   ├── set_repo_url.py     # sets the GitHub owner/name used in links
 │   ├── render_article_tables.py  # article tables -> PNG + Medium-ready copies
 │   ├── audit_articles.py   # article tables and code blocks checked against results/ and c2p
 │   ├── check_links.py      # requests every link of the drafts once and reports the broken ones
+│   ├── check_price_columns.py  # compares the dataset's price columns with the market operator's file
 │   ├── fetch_cloud_prices.py  # AWS Price List API -> data/reference/cloud_prices.csv
-│   └── cost_table.py       # joins measured throughput with published rates
+│   ├── cost_table.py       # joins measured throughput with published rates
+│   └── series_summary.py   # the one-page table and the decision path of part 7, from results/
 ├── tests/                  # pytest suite
 ├── pyproject.toml
 └── uv.lock
@@ -212,6 +227,10 @@ with the SKU, the effective date and the offer-file version beside every rate, s
 is visible instead of silently wrong. `scripts/cost_table.py` joins those rates with the
 throughput measured by `bench/bench_cpu_gpu.py`; it never claims local throughput transfers to a
 cloud instance, and reports the rate-only break-even ratio separately for that reason.
+
+The decision path that closes part 7 follows the same rule: `scripts/series_summary.py` reads
+the sentence under each step from the results files, so the figure cannot quote a number the
+experiments no longer support.
 
 The one figure that shows no measurement is the architecture diagram of article 1
 (`c2p.plots.architecture`): it describes the model. Even there the sizes it prints are read from
@@ -241,6 +260,7 @@ default to `True` to make it stick.
 uv run pytest                      # fast tests, no network
 uv run pytest -m slow              # downloads Chronos-2 and the dataset
 uv run ruff check . && uv run ruff format --check .
+uv run --with mypy mypy            # type check of src/c2p (mypy is not a project dependency)
 # The notebooks in fast mode on CPU, without the GPU notebooks 07 and 08:
 C2P_FAST_MODE=1 C2P_DEVICE=cpu uv run pytest --nbmake notebooks/ \
   --ignore-glob='notebooks/07_*' --ignore-glob='notebooks/08_*' \
@@ -262,8 +282,9 @@ Three paths, in increasing order of how much AWS does for you, each with its own
 | [`deploy/autogluon_cloud`](deploy/autogluon_cloud/) | Nothing; batch, real-time or serverless | `deploy_timeseries.py --delete --yes` |
 
 The two cloud scripts create nothing unless you pass `--yes`: `--plan` is the default and prints
-exactly what would be created and what would keep billing. `boto3`, `sagemaker` and
-`autogluon.cloud` are deliberately not dependencies of this project; add them with
+what would be created and what would keep billing. Neither has been run against an AWS account
+for this series (part 5 says which numbers were measured and which are published rates).
+`boto3`, `sagemaker` and `autogluon.cloud` are not dependencies of this project; add them with
 `uv add --group cloud ...` when you want them.
 
 ## Data
@@ -279,7 +300,7 @@ in `data/raw/`, which is git-ignored: the data is never committed to this reposi
 
 The code targets `chronos-forecasting==2.3.2` (pinned in `pyproject.toml`) on Python 3.11, with
 every other package locked in `uv.lock`. The Chronos API has changed between minor releases, so
-upgrade deliberately and rerun the tests.
+upgrade on purpose and rerun the tests.
 
 ## License
 

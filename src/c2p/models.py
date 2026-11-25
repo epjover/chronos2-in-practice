@@ -60,7 +60,12 @@ def parameter_count(pipeline: BaseChronosPipeline) -> int:
     return sum(parameter.numel() for parameter in pipeline.inner_model.parameters())
 
 
-def load_chronos2(model_id: str = CHRONOS2, *, device: str | None = None) -> Chronos2Pipeline:
+DTYPES = ("float32", "bfloat16", "float16")
+
+
+def load_chronos2(
+    model_id: str = CHRONOS2, *, device: str | None = None, dtype: str = "float32"
+) -> Chronos2Pipeline:
     """Load a Chronos-2 pipeline from the Hugging Face Hub or a local folder.
 
     Parameters
@@ -69,15 +74,26 @@ def load_chronos2(model_id: str = CHRONOS2, *, device: str | None = None) -> Chr
         Hub id (e.g. ``CHRONOS2``, ``CHRONOS2_SMALL``) or path to a fine-tuned checkpoint.
     device
         ``"cpu"`` or ``"cuda"``; ``None`` uses ``c2p.config.get_device()``.
+    dtype
+        Precision of the weights: ``"float32"`` (the checkpoint's own), or ``"bfloat16"`` /
+        ``"float16"`` for half precision, which on a GPU roughly doubles the throughput and
+        lowers the memory. Half precision is for inference on a GPU: on a CPU it is slower, and
+        fine-tuning should start from ``float32``. ``bench/cheaper_variants_accuracy.py``
+        measures what it does to the forecasts.
 
     Raises ``TypeError`` when ``model_id`` is a checkpoint of another Chronos family, such as
     Chronos-Bolt (use ``load_chronos_bolt`` for those).
     """
+    import torch
     from chronos import Chronos2Pipeline
 
+    if dtype not in DTYPES:
+        raise ValueError(f"dtype must be one of {DTYPES}, got {dtype!r}.")
     _check_chronos2_checkpoint(model_id)
     device = device or get_device()
-    pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device)
+    pipeline = Chronos2Pipeline.from_pretrained(
+        model_id, device_map=device, torch_dtype=getattr(torch, dtype)
+    )
     _log_loaded(model_id, device, pipeline)
     return pipeline
 

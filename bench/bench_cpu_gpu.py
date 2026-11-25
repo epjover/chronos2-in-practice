@@ -27,6 +27,7 @@ Usage::
 
     uv run python bench/bench_cpu_gpu.py --device cpu
     uv run python bench/bench_cpu_gpu.py --device cuda
+    uv run python bench/bench_cpu_gpu.py --device cuda --dtype bfloat16 --name bench_latency_bf16
 
 Results go to ``results/bench_latency.csv`` (one row per cell) and
 ``results/bench_latency_samples.csv`` (one row per timed call); ``--fast`` runs a reduced sweep
@@ -47,7 +48,7 @@ from chronos import Chronos2Pipeline
 from c2p.config import get_paths, set_seed
 from c2p.data import spain_energy_frame, validate_and_prepare
 from c2p.experiments import FREQ, LOAD
-from c2p.models import CHRONOS2, CHRONOS2_SMALL, load_chronos2, parameter_count
+from c2p.models import CHRONOS2, CHRONOS2_SMALL, DTYPES, load_chronos2, parameter_count
 from c2p.results import cores_available, cpu_model, save_results
 from c2p.schema import ID_COL, TIMESTAMP_COL
 
@@ -146,6 +147,7 @@ def benchmark(
     repeats: int,
     threads: int,
     budget_s: float = DEFAULT_BUDGET_S,
+    dtype: str = "float32",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Summary rows, one per (model, context, batch), and the raw timing samples behind them."""
     set_seed()
@@ -157,7 +159,7 @@ def benchmark(
     rows = []
     samples = []
     for model_id in models:
-        pipeline = load_chronos2(model_id, device=device)
+        pipeline = load_chronos2(model_id, device=device, dtype=dtype)
         parameters = parameter_count(pipeline)
         for context_length in contexts:
             for batch in batches:
@@ -176,6 +178,7 @@ def benchmark(
                     "model": model_id,
                     "params_m": parameters / 1e6,
                     "device": device,
+                    "dtype": dtype,
                     "cpu": cpu,
                     "cores_available": cores_available(),
                     "torch_threads": threads,
@@ -239,6 +242,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="PyTorch CPU threads (default: every core available to the process)",
     )
+    parser.add_argument(
+        "--dtype",
+        choices=DTYPES,
+        default="float32",
+        help="precision of the weights; bfloat16 or float16 only make sense on a GPU",
+    )
     parser.add_argument("--fast", action="store_true", help="reduced sweep, for a smoke test")
     parser.add_argument("--name", default="bench_latency", help="writes results/<name>.csv")
     args = parser.parse_args(argv)
@@ -257,6 +266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         repeats=3 if args.fast else args.repeats,
         threads=args.threads or cores_available(),
         budget_s=args.budget,
+        dtype=args.dtype,
     )
     paths = get_paths()
     path = save_results(results, args.name, paths)

@@ -673,6 +673,11 @@ def test_chronos2_forecaster_rejects_other_pipelines(bolt_stub):
         Chronos2Forecaster(bolt_stub)
 
 
+def test_load_chronos2_rejects_an_unknown_precision_before_loading_weights():
+    with pytest.raises(ValueError, match="dtype must be one of"):
+        load_chronos2(dtype="float8")
+
+
 def test_load_chronos2_rejects_other_families_before_loading_weights(tmp_path):
     config = {"model_type": "t5", "chronos_pipeline_class": "ChronosBoltPipeline"}
     (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")

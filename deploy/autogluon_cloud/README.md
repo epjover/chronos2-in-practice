@@ -1,21 +1,28 @@
 # Chronos-2 through AutoGluon Cloud
 
-The third deployment path in article 5, and the one with the least code: `fit` runs a SageMaker
-training job, `deploy` creates an endpoint, and there is no Dockerfile and no `model_fn`.
+The third deployment path of article 5, and the one with the least code: no Dockerfile, no
+`model_fn`, no training job. `TimeSeriesFoundationModel` wraps the pretrained checkpoint and
+`deploy_timeseries.py` exposes the three shapes a forecasting workload takes.
 
-| File | Purpose |
-| --- | --- |
-| `deploy_timeseries.py` | Fit a `TimeSeriesPredictor` restricted to Chronos-2 on SageMaker, deploy it, **delete it** |
+| `--mode` | What it creates | What keeps billing afterwards |
+| --- | --- | --- |
+| `batch` (default) | One SageMaker job that reads a frame, writes forecasts to S3 and exits | Nothing but the S3 objects |
+| `realtime` | A dedicated endpoint on `--realtime-instance` | The endpoint, per hour, until deleted |
+| `serverless` | A SageMaker Serverless Inference endpoint (CPU only) | Nothing while idle; GB-seconds per request |
 
-> **This creates paid AWS resources**: a training job billed per second and, unless you pass
-> `--no-deploy`, a real-time endpoint billed per hour until deleted. `--plan` is the default and
-> creates nothing; `--cleanup --yes` deletes the endpoint. Nothing here has been run against a
-> real account.
+> **This creates paid AWS resources.** `--plan` is the default and creates nothing; nothing
+> touches AWS without `--yes`. Every mode that leaves something running prints the command
+> that removes it.
+
+> **Status: written against the documented API, never run against an AWS account.** The
+> script has not created a job or an endpoint, so treat it as a starting point and expect to
+> adjust it. The costs in article 5 do not depend on it: they come from throughput measured
+> locally and the published rates in `data/reference/cloud_prices.csv`.
 
 ## Prerequisites
 
 ```bash
-uv add --group cloud "autogluon.cloud>=0.7" "autogluon.timeseries>=1.6"
+uv add --group cloud "autogluon.cloud>=0.7"
 ```
 
 Plus an S3 prefix and an IAM role AutoGluon Cloud can assume (its documentation lists the
@@ -25,35 +32,49 @@ because the library also launches jobs on your behalf).
 ## Use it
 
 ```bash
-uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --plan
+# 1. Print what would be created and what would keep billing. Creates nothing.
+uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --plan --mode serverless
 
-# zero-shot: no gradient steps, the job just packages and registers the predictor
-uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --yes \
+# 2. A batch job: forecast the next 24 hours of Spanish load, write to S3, exit.
+uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --yes --mode batch \
     --s3-path s3://my-bucket/chronos2 --role arn:aws:iam::123456789012:role/AGCloudRole
 
-# LoRA fine-tuning on a GPU instance, no endpoint afterwards
-uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --yes --fine-tune \
-    --no-deploy --s3-path s3://my-bucket/chronos2 --role <role-arn>
+# 3. A serverless endpoint that scales to zero.
+uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --yes --mode serverless \
+    --s3-path s3://my-bucket/chronos2 --role <role-arn>
 
-uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --cleanup --yes
+# 4. Delete an endpoint by name (real-time or serverless).
+uv run --group cloud python deploy/autogluon_cloud/deploy_timeseries.py --delete \
+    --endpoint <name> --yes
 ```
 
-`--cleanup` deletes the endpoint only. The trained predictor stays in S3; remove it with
-`aws s3 rm --recursive s3://my-bucket/chronos2`.
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--mode` | `batch` | `batch`, `realtime` or `serverless` |
+| `--s3-path`, `--role` | none | Required with `--yes`: where artifacts and outputs go, and the role assumed |
+| `--batch-instance` | `ml.m5.2xlarge` | Instance of the batch job |
+| `--realtime-instance` | `ml.c7i.xlarge` | Instance of the real-time endpoint |
+| `--serverless-memory-mb` | `6144` | Memory of the serverless endpoint (the largest size) |
+| `--serverless-concurrency` | `5` | Maximum concurrent invocations |
+| `--model-artifact-uri` | none | A cached `model.tar.gz` in S3, if you already have one |
+| `--endpoint` | none | Endpoint name; required with `--delete` |
+| `--plan` | on unless `--yes` | Print the plan and exit |
+| `--delete` | off | Delete the endpoint named by `--endpoint` |
+| `--yes` | off | The safety switch: without it nothing is created or deleted |
+
+`--delete` removes the endpoint only. What the run wrote to S3 (the cached model artifact, the
+batch outputs) stays there; remove it with `aws s3 rm --recursive s3://my-bucket/chronos2`.
 
 ## What you give up, and what you get
 
-The script pins `hyperparameters={"Chronos2": {...}}` so AutoGluon trains Chronos-2 and nothing
-else. Without that it would fit an ensemble, and the resulting accuracy would no longer be
-attributable to the model this series is about.
-
-The request format is AutoGluon's, not the JSON `deploy/fastapi` and `deploy/sagemaker` share,
-so a client written against one does not work against this one. That is the real cost of the
-managed path; the saving is that there is no handler, no image and no endpoint wiring to
-maintain.
-
-One detail worth knowing before you choose between fine-tuning here and the notebooks in article
-4: `Chronos2Model` in `autogluon.timeseries` 1.6.3 defaults to LoRA at `fine_tune_lr=1e-5`,
-`fine_tune_steps=1000`, `fine_tune_batch_size=32` and `fine_tune_context_length=2048`, which are
-the settings article 4 arrives at independently. The managed path is not a different experiment,
-only less code around the same one.
+- **Serverless needs the weights in S3.** A serverless container starts without access to the
+  Hugging Face Hub, so the script calls `cache_model_artifact` first (or reuses
+  `--model-artifact-uri`). It runs on CPU and the first call after a quiet period pays a cold
+  start: article 5 prices that trade.
+- **The request format is AutoGluon's**, not the JSON that `deploy/fastapi` and
+  `deploy/sagemaker` share, so a client written against one does not work against this one.
+  That is the cost of the managed path; the saving is that there is no handler, no image and
+  no endpoint wiring to maintain.
+- **No fine-tuning here.** This script serves the pretrained checkpoint. Fine-tuning through
+  AutoGluon goes through `TimeSeriesPredictor` with `hyperparameters={"Chronos2": {...}}`,
+  which article 4 describes next to the notebooks that do it with the library directly.

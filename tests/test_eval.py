@@ -25,6 +25,7 @@ from c2p.eval import (
     WINDOW_COL,
     BacktestConfig,
     Window,
+    average_runs,
     backtest,
     error_by_step,
     evaluate,
@@ -1336,3 +1337,47 @@ def test_diagnostics_run_on_a_real_backtest() -> None:
     steps = error_by_step(forecasts)
     assert steps["step"].tolist() == [1, 2, 3, 4, 5, 6]
     assert (steps["n"] == 10).all()  # 5 windows x 2 series
+
+
+# --------------------------------------------------------------------------------------------
+# Several runs of one configuration
+# --------------------------------------------------------------------------------------------
+
+
+def test_average_runs_averages_each_window_over_the_runs() -> None:
+    runs = pd.concat(
+        [
+            pd.DataFrame(
+                {MODEL_COL: "seed_1", WINDOW_COL: [0, 1], "WQL": [0.2, 0.4], "seconds": 1.0}
+            ),
+            pd.DataFrame(
+                {MODEL_COL: "seed_2", WINDOW_COL: [1, 0], "WQL": [0.8, 0.4], "seconds": 3.0}
+            ),
+        ],
+        ignore_index=True,
+    )
+    runs[CUTOFF_COL] = pd.Timestamp("2024-01-01") + pd.to_timedelta(runs[WINDOW_COL], unit="D")
+    averaged = average_runs(runs, "lora")
+    assert averaged[MODEL_COL].tolist() == ["lora", "lora"]
+    assert averaged[WINDOW_COL].tolist() == [0, 1]
+    assert averaged["WQL"].tolist() == pytest.approx([0.3, 0.6])
+    assert averaged["seconds"].tolist() == [2.0, 2.0]
+    assert averaged[CUTOFF_COL].tolist() == [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")]
+    # The averaged run goes through the skill table like any model.
+    baseline = pd.DataFrame({MODEL_COL: "seasonal_naive", WINDOW_COL: [0, 1], "WQL": [0.6, 1.2]})
+    table = skill_table(pd.concat([averaged, baseline], ignore_index=True)).set_index(MODEL_COL)
+    assert table.loc["lora", "skill"] == pytest.approx(0.5)
+
+
+def test_average_runs_rejects_runs_on_different_windows() -> None:
+    runs = pd.concat(
+        [
+            pd.DataFrame({MODEL_COL: "seed_1", WINDOW_COL: [0, 1], "WQL": [0.2, 0.4]}),
+            pd.DataFrame({MODEL_COL: "seed_2", WINDOW_COL: [0, 2], "WQL": [0.2, 0.4]}),
+        ],
+        ignore_index=True,
+    )
+    with pytest.raises(ValueError, match="same windows"):
+        average_runs(runs, "lora")
+    with pytest.raises(ValueError, match="is empty"):
+        average_runs(runs.iloc[:0], "lora")

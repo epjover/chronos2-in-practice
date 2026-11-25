@@ -11,6 +11,8 @@
 The first four are univariate: each (item, target) pair is forecast on its own, multiple
 targets are handled by a loop, and covariate columns and ``future_covariates`` are ignored.
 ``PublishedForecast`` is the opposite: it reads only ``future_covariates``.
+``ResidualForecaster`` combines the two: any forecaster, run on what a published forecast got
+wrong.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from c2p.schema import (
     TARGET_COL,
     TARGET_NAME_COL,
     TIMESTAMP_COL,
+    Forecaster,
     quantile_col,
 )
 
@@ -526,6 +529,87 @@ class PublishedForecast:
         quantiles = {quantile_col(level): published for level in levels}
         return finalize_forecast(
             pd.DataFrame(columns | quantiles),
+            context=context,
+            targets=targets,
+            quantile_levels=levels,
+            prediction_length=prediction_length,
+            freq=freq,
+            model_name=self.name,
+        )
+
+
+class ResidualForecaster:
+    """Forecast the error of a published forecast with ``base``, and add the forecast back.
+
+    The context's target is replaced by ``target - column`` (what the published forecast got
+    wrong in the past), ``base`` forecasts that residual on its own, and the published values
+    for the horizon are added to its point forecast and to every quantile. The published
+    forecast carries the level and the shape; the model only has to learn whether its errors
+    persist. The quantiles are therefore the model's uncertainty about the residual, placed
+    around the published value.
+
+    Parameters
+    ----------
+    base
+        Any ``Forecaster``; it receives the residual as a single univariate target.
+    column
+        Known-future covariate that holds the published forecast (present in the context too).
+    name
+        Model name used in results tables; defaults to ``"<base.name>_on_<column>_error"``.
+    """
+
+    def __init__(self, base: Forecaster, column: str, *, name: str | None = None) -> None:
+        self.base = base
+        self.column = column
+        self.name = name or f"{base.name}_on_{column}_error"
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Forecast one target as the published forecast plus ``base``'s forecast of its error."""
+        targets, levels = validate_forecast_inputs(
+            context,
+            target=target,
+            quantile_levels=quantile_levels,
+            prediction_length=prediction_length,
+            freq=freq,
+        )
+        if len(targets) != 1:
+            raise ValueError(f"{self.name} corrects one published forecast, got {targets}.")
+        if self.column not in context.columns:
+            raise ValueError(f"{self.name} needs {self.column!r} in the context.")
+        if future_covariates is None or self.column not in future_covariates.columns:
+            raise ValueError(
+                f"{self.name} needs {self.column!r} in future_covariates: declare it in "
+                "BacktestConfig(known_covariates=...)."
+            )
+        name = targets[0]
+        residual = context[[ID_COL, TIMESTAMP_COL]].assign(
+            **{name: context[name].to_numpy("float64") - context[self.column].to_numpy("float64")}
+        )
+        forecast = self.base.predict(
+            residual,
+            prediction_length=prediction_length,
+            quantile_levels=levels,
+            freq=freq,
+            target=name,
+        )
+        published = future_covariates[[ID_COL, TIMESTAMP_COL, self.column]]
+        merged = forecast.merge(published, on=[ID_COL, TIMESTAMP_COL], how="left", validate="1:1")
+        offset = merged[self.column].to_numpy("float64")
+        if np.isnan(offset).any():
+            raise ValueError(f"{self.column!r} has missing values in the horizon.")
+        for column in (PREDICTION_COL, *(quantile_col(level) for level in levels)):
+            merged[column] = merged[column].to_numpy("float64") + offset
+        return finalize_forecast(
+            merged.drop(columns=self.column),
             context=context,
             targets=targets,
             quantile_levels=levels,

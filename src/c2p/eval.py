@@ -67,6 +67,7 @@ __all__ = [
     "BacktestConfig",
     "SkillScore",
     "Window",
+    "average_runs",
     "backtest",
     "coverage_column",
     "error_by_step",
@@ -1176,3 +1177,43 @@ def _examples(frame: pd.DataFrame, n: int = 3) -> list[tuple[str, ...]]:
 
 def _preview(values: pd.Series, n: int = 5) -> dict[str, str]:
     return {str(key): str(value) for key, value in values.head(n).items()}
+
+
+# --------------------------------------------------------------------------------------------
+# Several runs of one configuration
+# --------------------------------------------------------------------------------------------
+
+
+def average_runs(metrics: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Average the per-window metrics of several runs into the metrics of one model.
+
+    ``metrics`` holds the :func:`evaluate` rows of runs that differ only in something the
+    experimenter does not choose, such as the random seed of a fine-tune. For every window the
+    numeric columns are averaged over the runs and the result is labelled ``name``, so it can
+    go through :func:`summarize` and :func:`skill_table` like any model. What it estimates is
+    the error to expect from *a* run of that configuration, which is the quantity a single
+    seed reports with luck added.
+
+    Every run must cover the same windows.
+    """
+    _check_is_frame(metrics, "metrics")
+    _check_columns(metrics, [MODEL_COL, WINDOW_COL], "metrics")
+    if metrics.empty:
+        raise ValueError("metrics is empty.")
+    windows_by_run = metrics.groupby(MODEL_COL, sort=True)[WINDOW_COL].apply(
+        lambda column: tuple(sorted(column))
+    )
+    if len(set(windows_by_run)) != 1:
+        raise ValueError(
+            f"The runs {windows_by_run.index.tolist()} do not cover the same windows; "
+            "average only runs scored on the same backtest."
+        )
+    keys = [column for column in (WINDOW_COL, CUTOFF_COL, TARGET_NAME_COL) if column in metrics]
+    numeric = [
+        column
+        for column in metrics.columns
+        if column not in keys and pd.api.types.is_numeric_dtype(metrics[column])
+    ]
+    averaged = metrics.groupby(keys, sort=True, as_index=False)[numeric].mean()
+    averaged.insert(0, MODEL_COL, name)
+    return averaged

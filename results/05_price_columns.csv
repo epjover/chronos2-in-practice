@@ -1,0 +1,11 @@
+year,measure,value
+2018,hours_compared,8760.0
+2018,actual_vs_omie_correlation,0.990457
+2018,actual_minus_omie_mean,6.145438
+2018,actual_minus_omie_std,1.823469
+2018,actual_equal_to_omie_share,0.0
+2018,day_ahead_column_equal_to_omie_share,0.638584
+2018,day_ahead_column_vs_omie_correlation,0.667934
+2018,days_compared,365.0
+2018,days_day_ahead_column_equal_all_hours,233.0
+2018,days_day_ahead_column_equal_no_hour,130.0

@@ -47,6 +47,7 @@ __all__ = [
     "plot_backtest_windows",
     "plot_coverage",
     "plot_error_by_step",
+    "plot_interval_bars",
     "plot_reliability",
     "plot_skill_scores",
     "plot_what_if",
@@ -529,4 +530,95 @@ def plot_error_by_step(
         ax.set_xlabel(xlabel)
         ax.set_ylabel(f"{metric} at that step")
         _legend_above(ax, handles, models, title)
+    return ax
+
+
+# --- A mean with its interval, per label ---------------------------------------------------
+
+
+def plot_interval_bars(
+    table: pd.DataFrame,
+    *,
+    label: str,
+    value: str = "mean",
+    low: str = "ci_low",
+    high: str = "ci_high",
+    value_format: str = "{:+.4f}",
+    highlight: str | None = None,
+    title: str | None = None,
+    xlabel: str | None = None,
+    ax: Axes | None = None,
+) -> Axes:
+    """Horizontal bars of a mean per label, each with its interval drawn and written out.
+
+    For tables such as ``c2p.explain.importance_summary``: one row per ``label`` with a
+    ``value`` and the bounds ``low`` and ``high``. Rows are sorted by value, largest at the
+    top. The number at the right of each bar is the value followed by its interval, so a
+    reader can see without a ruler whether an interval contains zero.
+    """
+    required = [label, value, low, high]
+    missing = [column for column in required if column not in table.columns]
+    if missing:
+        raise ValueError(f"table is missing the columns {missing}.")
+    if table.empty:
+        raise ValueError("table is empty.")
+    rows = table.sort_values(value)
+    values = rows[value].to_numpy("float64")
+    lows = rows[low].to_numpy("float64")
+    highs = rows[high].to_numpy("float64")
+    is_highlight = (rows[label] == highlight).to_numpy()
+    positions = np.arange(len(rows))
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 0.46 * len(rows) + 1.5), layout="constrained")
+        ax.barh(
+            positions,
+            values,
+            height=0.56,
+            color=np.where(is_highlight, BLUE, NEUTRAL_BAR),
+            zorder=2,
+        )
+        ax.errorbar(
+            values,
+            positions,
+            xerr=[values - lows, highs - values],
+            fmt="none",
+            ecolor=INK_SECONDARY,
+            elinewidth=1.1,
+            capsize=3.5,
+            zorder=3,
+        )
+        left, right = min(0.0, lows.min()), max(0.0, highs.max())
+        span = max(right - left, 1e-12)
+        for y, mean, lo, hi, strong in zip(
+            positions, values, lows, highs, is_highlight, strict=True
+        ):
+            text = (
+                f"{value_format.format(mean)}  "
+                f"[{value_format.format(lo)}, {value_format.format(hi)}]"
+            )
+            ax.annotate(
+                text,
+                (max(hi, 0.0) + 0.02 * span, y),
+                va="center",
+                ha="left",
+                fontsize=9.5,
+                color=INK_PRIMARY if strong else INK_SECONDARY,
+                fontweight="bold" if strong else "normal",
+            )
+        _style_axes(ax, grid="none")
+        ax.axvline(0, color=AXIS_COLOR, linewidth=1.0)
+        ax.set_yticks(positions, labels=rows[label].astype(str).tolist())
+        for tick, strong in zip(ax.get_yticklabels(), is_highlight, strict=True):
+            tick.set_color(INK_PRIMARY if strong else INK_SECONDARY)
+            tick.set_fontweight("bold" if strong else "normal")
+        ax.set_xlim(left - 0.05 * span, right + 0.75 * span)
+        ax.xaxis.set_visible(False)
+        ax.spines["bottom"].set_visible(False)
+        if xlabel is not None:
+            ax.set_xlabel(xlabel)
+            ax.xaxis.set_visible(True)
+            ax.set_xticks([])
+        if title is not None:
+            set_axes_title(ax, title)
     return ax

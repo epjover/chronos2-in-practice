@@ -31,6 +31,7 @@ TSO_COVARIATES: tuple[str, ...] = (
 TRAIN_END = pd.Timestamp("2017-06-30 21:00")
 VALIDATION_END = pd.Timestamp("2017-12-31 22:00")
 TEST_DAYS = 365
+VALIDATION_DAYS = 184  # 2017-07-01 to 2017-12-31, local days
 # Sweeps run on a sample of the test year: one window every five days. Five and seven share no
 # factor, so the forecast day walks through the week.
 SAMPLE_STEP_DAYS = 5
@@ -52,6 +53,33 @@ def day_ahead_config(
         prediction_length=24,
         n_windows=12 if fast_mode else TEST_DAYS,
         step=24 * 30 if fast_mode else 24,
+        freq=FREQ,
+        season_length=DAILY_SEASON,
+        target=target,
+        known_covariates=known_covariates,
+        max_context=max_context,
+    )
+
+
+def validation_config(
+    fast_mode: bool,
+    *,
+    target: str | tuple[str, ...] = LOAD,
+    known_covariates: tuple[str, ...] = (),
+    max_context: int | None = None,
+) -> BacktestConfig:
+    """Day-ahead backtest over the validation period: the 184 days of the second half of 2017.
+
+    Windows are counted back from the end of the frame, so pass a frame cut at
+    :data:`VALIDATION_END` (``df[df["timestamp"] <= VALIDATION_END]``). This is where choices
+    are made (a fine-tuning budget, a calibration): the 2018 windows of
+    :func:`day_ahead_config` stay untouched until the choice is final. Fast mode keeps 12
+    windows.
+    """
+    return BacktestConfig(
+        prediction_length=24,
+        n_windows=12 if fast_mode else VALIDATION_DAYS,
+        step=24,
         freq=FREQ,
         season_length=DAILY_SEASON,
         target=target,

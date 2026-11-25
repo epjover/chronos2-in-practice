@@ -24,6 +24,7 @@ from c2p.baselines import (
     AutoETS,
     ChronosBolt,
     PublishedForecast,
+    ResidualForecaster,
     SeasonalNaive,
     _from_statsforecast,
     _interval_level,
@@ -981,5 +982,74 @@ def test_published_forecast_rejects_several_targets():
             quantile_levels=[0.5],
             freq=FREQ,
             target=["load", "price"],
+            future_covariates=future,
+        )
+
+
+def test_residual_forecaster_adds_the_published_forecast_back():
+    context = make_context(nan_positions=())
+    # The published forecast is the target minus a daily pattern the naive can repeat exactly.
+    hours = context[TIMESTAMP_COL].dt.hour.to_numpy()
+    context = context.assign(operator=context[TARGET_COL] - np.sin(hours))
+    future = make_published_future(context, SEASON)
+    model = ResidualForecaster(SeasonalNaive(SEASON), "operator")
+    forecast = model.predict(
+        context,
+        prediction_length=SEASON,
+        quantile_levels=[0.1, 0.5, 0.9],
+        freq=FREQ,
+        future_covariates=future,
+    )
+    assert model.name == "seasonal_naive_on_operator_error"
+    assert_valid_forecast(
+        forecast,
+        context,
+        targets=[TARGET_COL],
+        prediction_length=SEASON,
+        quantile_levels=[0.1, 0.5, 0.9],
+    )
+    future_hours = future[TIMESTAMP_COL].dt.hour.to_numpy()
+    expected = future["operator"].to_numpy() + np.sin(future_hours)
+    assert forecast[PREDICTION_COL].to_numpy() == pytest.approx(expected, abs=1e-9)
+    assert (forecast["0.9"] >= forecast["0.5"]).all() and (forecast["0.5"] >= forecast["0.1"]).all()
+
+
+def test_residual_forecaster_hands_the_base_only_the_residual():
+    seen = {}
+
+    class Spy:
+        name = "spy"
+
+        def predict(self, context, **kwargs):
+            seen["columns"] = list(context.columns)
+            seen["future"] = kwargs.get("future_covariates")
+            return SeasonalNaive(SEASON).predict(context, **kwargs)
+
+    context = make_context(nan_positions=()).assign(operator=1.0, other=2.0)
+    future = make_published_future(context, 6)
+    ResidualForecaster(Spy(), "operator").predict(
+        context, prediction_length=6, quantile_levels=[0.5], freq=FREQ, future_covariates=future
+    )
+    assert seen["columns"] == [ID_COL, TIMESTAMP_COL, TARGET_COL]
+    assert seen["future"] is None
+
+
+@pytest.mark.parametrize(
+    ("context_change", "future_change", "match"),
+    [
+        (lambda c: c.drop(columns="operator"), lambda f: f, "in the context"),
+        (lambda c: c, lambda f: None, "in future_covariates"),
+        (lambda c: c, lambda f: f.assign(operator=np.nan), "missing values in the horizon"),
+    ],
+)
+def test_residual_forecaster_rejects_incomplete_inputs(context_change, future_change, match):
+    context = make_context(nan_positions=()).assign(operator=1.0)
+    future = future_change(make_published_future(context, 6))
+    with pytest.raises(ValueError, match=match):
+        ResidualForecaster(SeasonalNaive(SEASON), "operator").predict(
+            context_change(context),
+            prediction_length=6,
+            quantile_levels=[0.5],
+            freq=FREQ,
             future_covariates=future,
         )

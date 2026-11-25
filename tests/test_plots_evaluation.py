@@ -12,6 +12,7 @@ from c2p.plots.evaluation import (
     plot_backtest_windows,
     plot_coverage,
     plot_error_by_step,
+    plot_interval_bars,
     plot_reliability,
     plot_skill_scores,
     plot_what_if,
@@ -276,3 +277,29 @@ def test_diagnostic_plots_reject_bad_frames(plot) -> None:
     empty = pd.DataFrame({"model": [], "level": [], "observed": [], "step": [], "WQL": []})
     with pytest.raises(ValueError, match="is empty"):
         plot(empty)
+
+
+def test_interval_bars_sort_by_value_and_write_the_interval() -> None:
+    table = pd.DataFrame(
+        {
+            "player": ["calendar", "wind", "load"],
+            "mean": [0.002, -0.001, 0.004],
+            "ci_low": [-0.001, -0.003, 0.001],
+            "ci_high": [0.005, 0.001, 0.007],
+        }
+    )
+    ax = plot_interval_bars(table, label="player", highlight="load", xlabel="WQL removed")
+    assert [tick.get_text() for tick in ax.get_yticklabels()] == ["wind", "calendar", "load"]
+    annotations = [text.get_text() for text in ax.texts]
+    assert annotations[-1] == "+0.0040  [+0.0010, +0.0070]"
+    assert ax.get_yticklabels()[-1].get_fontweight() == "bold"
+    assert ax.get_xlabel() == "WQL removed"
+    plt.close(ax.figure)
+
+
+def test_interval_bars_reject_bad_frames() -> None:
+    with pytest.raises(ValueError, match="missing the columns"):
+        plot_interval_bars(pd.DataFrame({"player": ["a"]}), label="player")
+    empty = pd.DataFrame({"player": [], "mean": [], "ci_low": [], "ci_high": []})
+    with pytest.raises(ValueError, match="is empty"):
+        plot_interval_bars(empty, label="player")

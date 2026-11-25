@@ -14,6 +14,7 @@ from c2p.experiments import (
     VALIDATION_END,
     day_ahead_config,
     rotating_sample_config,
+    validation_config,
 )
 from c2p.schema import ID_COL, TIMESTAMP_COL
 
@@ -87,3 +88,16 @@ def test_fast_mode_sample_does_not_repeat_one_weekday(spain_grid: pd.DataFrame) 
 def test_rotating_sample_rejects_a_weekly_step(step_days: int) -> None:
     with pytest.raises(ValueError, match="same weekday"):
         rotating_sample_config(fast_mode=False, step_days=step_days)
+
+
+def test_validation_windows_cover_the_second_half_of_2017(spain_grid: pd.DataFrame) -> None:
+    frame = spain_grid[spain_grid[TIMESTAMP_COL] <= VALIDATION_END]
+    windows = rolling_origin_windows(frame, validation_config(fast_mode=False))
+    assert len(windows) == 184
+    assert windows[0].cutoff == TRAIN_END + pd.Timedelta(hours=1)
+    assert windows[0].actuals[TIMESTAMP_COL].iloc[0] > TRAIN_END  # nothing trained on is scored
+    assert windows[-1].actuals[TIMESTAMP_COL].iloc[-1] == VALIDATION_END
+    test_windows = rolling_origin_windows(spain_grid, day_ahead_config(fast_mode=False))
+    assert (
+        windows[-1].actuals[TIMESTAMP_COL].iloc[-1] < test_windows[0].actuals[TIMESTAMP_COL].iloc[0]
+    )

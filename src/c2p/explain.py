@@ -79,6 +79,7 @@ __all__ = [
     "covariate_players",
     "covariate_shapley",
     "exact_shapley",
+    "importance_summary",
     "occlusion",
     "permutation_importance",
     "shapley_values",
@@ -1186,3 +1187,59 @@ def stack_windows(
 def _relabel(frame: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:
     suffix = f"@{cutoff:%Y-%m-%dT%H:%M}"
     return frame.assign(**{ID_COL: frame[ID_COL].astype(str) + suffix})
+
+
+# --------------------------------------------------------------------------------------------
+# From per-window attributions to a table with intervals
+# --------------------------------------------------------------------------------------------
+
+
+def importance_summary(
+    per_window: pd.DataFrame,
+    *,
+    value: str,
+    by: Sequence[str] = (PLAYER_COL,),
+    n_resamples: int = 2000,
+    seed: int = SEED,
+    alpha: float = 0.05,
+) -> pd.DataFrame:
+    """Mean of a per-window attribution with a bootstrap interval over the windows.
+
+    Every function of this module returns one row per stacked window (``item_id``) and player.
+    The mean over windows is what gets reported, and a mean of a dozen noisy values needs its
+    uncertainty next to it: a player whose interval contains zero has not been shown to
+    matter, and two players whose intervals overlap have not been ranked.
+
+    Returns one row per group of ``by`` with ``mean``, ``ci_low`` and ``ci_high`` (the
+    ``1 - alpha`` percentile interval of the mean, resampling windows with replacement),
+    ``share_positive`` (windows in which the value is above zero) and ``n_windows``.
+    Deterministic for a given ``seed``.
+    """
+    columns = [*by, value]
+    missing = [column for column in columns if column not in per_window.columns]
+    if missing:
+        raise ValueError(f"per_window lacks the columns {missing}.")
+    if per_window.empty:
+        raise ValueError("per_window is empty.")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha}.")
+    rng = np.random.default_rng(seed)
+    rows = []
+    for key, group in per_window.groupby(list(by), sort=False):
+        values = group[value].to_numpy("float64")
+        if np.isnan(values).any():
+            raise ValueError(f"{value} is NaN in some windows of {key}.")
+        draws = rng.integers(0, len(values), size=(n_resamples, len(values)))
+        means = values[draws].mean(axis=1)
+        labels = key if isinstance(key, tuple) else (key,)
+        rows.append(
+            dict(zip(by, labels, strict=True))
+            | {
+                "mean": float(values.mean()),
+                "ci_low": float(np.quantile(means, 0.5 * alpha)),
+                "ci_high": float(np.quantile(means, 1.0 - 0.5 * alpha)),
+                "share_positive": float((values > 0).mean()),
+                "n_windows": len(values),
+            }
+        )
+    return pd.DataFrame(rows)

@@ -1,0 +1,17 @@
+anomaly,representation,auc,n_anomalies,n_windows
+holiday on a working day,raw window,0.6711876317638791,30,1453
+holiday on a working day,embedding (mean),0.7228624970719137,30,1453
+holiday on a working day,embedding (reg),0.7721246193487936,30,1453
+holiday on a working day,embedding (forecast),0.7519793862731319,30,1453
+one hour 30% too high,raw window,0.6386019697333654,184,365
+one hour 30% too high,embedding (mean),0.6471595003603171,184,365
+one hour 30% too high,embedding (reg),0.6785070862358876,184,365
+one hour 30% too high,embedding (forecast),0.6759848666826808,184,365
+last 12 hours frozen,raw window,0.6171030506846025,184,365
+last 12 hours frozen,embedding (mean),0.8722976219072784,184,365
+last 12 hours frozen,embedding (reg),0.9021739130434783,184,365
+last 12 hours frozen,embedding (forecast),0.9476639442709585,184,365
+last day 10% too high,raw window,0.6421150612539034,184,365
+last day 10% too high,embedding (mean),0.6651153014652894,184,365
+last day 10% too high,embedding (reg),0.6965529666106174,184,365
+last day 10% too high,embedding (forecast),0.6959824645688205,184,365

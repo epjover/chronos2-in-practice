@@ -18,7 +18,7 @@ Run it after editing an article; the images are regenerated from scratch each ti
 
 Usage::
 
-    uv run python scripts/render_article_tables.py            # all five articles
+    uv run python scripts/render_article_tables.py            # every article
     uv run python scripts/render_article_tables.py --only 05  # one article
 """
 

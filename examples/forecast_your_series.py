@@ -2,7 +2,7 @@ r"""Forecast your own CSV with Chronos-2: checklist, zero-shot quantiles, fan ch
 
 The notebooks all start from the Spanish electricity dataset. This script is the same pipeline
 pointed at a file of yours, so the first forecast on your data is one command rather than a
-read of five articles:
+read of seven articles:
 
     uv run python examples/forecast_your_series.py data.csv \\
         --id-column store --timestamp-column date --target sales --freq D --horizon 14

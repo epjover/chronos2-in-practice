@@ -1,6 +1,6 @@
 """Fix the one defect every article found: calibrate Chronos-2's intervals and re-score 2018.
 
-Parts 2 to 5 all report the same thing (the 80% band covers about 73% of the hours on Spanish
+Parts 2 to 4 all report the same thing (the 80% band covers about 73% of the hours on Spanish
 load, and far fewer in winter) and every lever they pull targets the median. This script pulls
 the one lever that targets the bands and needs no training: conformalized quantile regression
 (``c2p.conformal``), whose coverage guarantee holds when the calibration misses and the test

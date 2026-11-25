@@ -17,6 +17,7 @@ from c2p.plots.architecture import (
     FIGURE_WIDTH,
     FONT_PATH,
     Chronos2Sizes,
+    Stage,
     chronos2_sizes,
     plot_architecture,
 )
@@ -107,3 +108,36 @@ def test_published_defaults_match_the_real_checkpoint() -> None:
     from c2p.models import load_chronos2
 
     assert chronos2_sizes(load_chronos2(device="cpu")) == Chronos2Sizes()
+
+
+# --- Generic stages and the decision path ---------------------------------------------------
+
+STEPS = ("data", "baseline", "covariates", "context", "finetune", "calibration", "serving")
+
+
+def test_plot_stages_draws_one_numbered_box_per_stage() -> None:
+    from c2p.plots.architecture import plot_stages
+
+    stages = [Stage("First", "what happens first"), Stage("Second", "and then", badge="new")]
+    fig = plot_stages(stages, title="Two steps")
+    texts = [text.get_text() for text in fig.axes[0].texts]
+    assert "Two steps" in texts and "First" in texts and "Second" in texts and "new" in texts
+    assert {"1", "2"} <= set(texts)
+    with pytest.raises(ValueError, match="at least one stage"):
+        plot_stages([])
+
+
+def test_decision_path_prints_what_was_measured_for_every_step() -> None:
+    from c2p.plots.architecture import decision_stages, plot_decision_path
+
+    measured = {key: f"measured for {key}" for key in (*STEPS, "monitoring")}
+    stages = decision_stages(measured)
+    assert len(stages) == 8
+    assert [stage.sub[0] for stage in stages] == [
+        ("Measured", f"measured for {key}") for key in (*STEPS, "monitoring")
+    ]
+    fig = plot_decision_path(measured)
+    drawn = " ".join(text.get_text() for text in fig.axes[0].texts)
+    assert "measured for calibration" in drawn
+    with pytest.raises(ValueError, match="monitoring"):
+        decision_stages(dict.fromkeys(STEPS, "x"))

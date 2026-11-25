@@ -91,9 +91,9 @@ def load_chronos2(
         raise ValueError(f"dtype must be one of {DTYPES}, got {dtype!r}.")
     _check_chronos2_checkpoint(model_id)
     device = device or get_device()
-    pipeline = Chronos2Pipeline.from_pretrained(
-        model_id, device_map=device, torch_dtype=getattr(torch, dtype)
-    )
+    # float32 is the checkpoint's own precision: leave the library's default untouched.
+    precision = {} if dtype == "float32" else {"dtype": getattr(torch, dtype)}
+    pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device, **precision)
     _log_loaded(model_id, device, pipeline)
     return pipeline
 

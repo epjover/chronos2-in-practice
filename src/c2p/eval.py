@@ -78,6 +78,7 @@ __all__ = [
     "skill_score",
     "skill_table",
     "summarize",
+    "summarize_runs",
 ]
 
 logger = logging.getLogger(__name__)
@@ -1217,3 +1218,75 @@ def average_runs(metrics: pd.DataFrame, name: str) -> pd.DataFrame:
     averaged = metrics.groupby(keys, sort=True, as_index=False)[numeric].mean()
     averaged.insert(0, MODEL_COL, name)
     return averaged
+
+
+def summarize_runs(
+    metrics: pd.DataFrame,
+    groups: Mapping[str, Sequence[str]],
+    *,
+    baseline: str = "zero-shot",
+    metric: str = "WQL",
+    block_length: int = 1,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score groups of runs against ``baseline``: each group averaged, plus its spread.
+
+    ``groups`` maps a name (``"lora_r8"``) to the models of ``metrics`` that are runs of that
+    configuration (its seeds). Each group is averaged window by window with
+    :func:`average_runs` and scored like a model; the single runs are scored too, so the
+    summary shows how far one run can sit from the average.
+
+    Returns ``(summary, averaged)``. ``summary`` has one row per group: ``model``, ``n_runs``,
+    the mean ``metric``, ``mean_change`` (mean metric over the baseline's, minus one: the
+    arithmetic counterpart of the skill, dominated by the windows with large errors),
+    ``skill`` with ``ci_low``, ``ci_high`` and ``win_rate`` (the geometric one, of the averaged
+    runs), ``run_skill_min`` and ``run_skill_max`` (the skill of the worst and best single
+    run) and the coverage columns present. ``averaged`` holds the baseline's rows and the
+    averaged rows of every group, ready for :func:`skill_table`.
+    """
+    _check_is_frame(metrics, "metrics")
+    _check_columns(metrics, [MODEL_COL, WINDOW_COL, metric], "metrics")
+    if not groups:
+        raise ValueError("groups is empty.")
+    available = set(metrics[MODEL_COL].unique())
+    missing = sorted({baseline, *(run for runs in groups.values() for run in runs)} - available)
+    if missing:
+        raise ValueError(f"metrics has no rows for {missing}; available: {sorted(available)}.")
+    if baseline in groups:
+        raise ValueError(f"A group cannot be named like the baseline {baseline!r}.")
+    reference = metrics[metrics[MODEL_COL] == baseline]
+    averaged = pd.concat(
+        [reference]
+        + [
+            average_runs(metrics[metrics[MODEL_COL].isin(list(runs))], name)
+            for name, runs in groups.items()
+        ],
+        ignore_index=True,
+    )
+    means = averaged.groupby(MODEL_COL)[
+        [column for column in (metric, *COVERAGE_COLUMNS) if column in averaged]
+    ].mean()
+    rows = []
+    for name, runs in groups.items():
+        score = skill_score(
+            averaged, model=name, baseline=baseline, metric=metric, block_length=block_length
+        )
+        run_skills = [
+            skill_score(metrics, model=run, baseline=baseline, metric=metric).skill for run in runs
+        ]
+        row: dict[str, object] = {
+            MODEL_COL: name,
+            "n_runs": len(runs),
+            metric: float(means.loc[name, metric]),
+            "mean_change": float(means.loc[name, metric] / means.loc[baseline, metric] - 1.0),
+            "skill": score.skill,
+            "ci_low": score.ci_low,
+            "ci_high": score.ci_high,
+            "win_rate": score.win_rate,
+            "run_skill_min": min(run_skills),
+            "run_skill_max": max(run_skills),
+        }
+        row |= {
+            column: float(means.loc[name, column]) for column in COVERAGE_COLUMNS if column in means
+        }
+        rows.append(row)
+    return pd.DataFrame(rows), averaged

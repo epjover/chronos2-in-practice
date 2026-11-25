@@ -34,6 +34,7 @@ from c2p.eval import (
     skill_score,
     skill_table,
     summarize,
+    summarize_runs,
 )
 from c2p.schema import (
     EVAL_QUANTILES,
@@ -1381,3 +1382,34 @@ def test_average_runs_rejects_runs_on_different_windows() -> None:
         average_runs(runs, "lora")
     with pytest.raises(ValueError, match="is empty"):
         average_runs(runs.iloc[:0], "lora")
+
+
+def test_summarize_runs_scores_the_average_and_reports_the_spread() -> None:
+    baseline = pd.DataFrame({MODEL_COL: "zero-shot", WINDOW_COL: range(4), "WQL": 1.0})
+    seed_1 = pd.DataFrame({MODEL_COL: "a_s1", WINDOW_COL: range(4), "WQL": [0.5, 0.5, 0.5, 0.5]})
+    seed_2 = pd.DataFrame({MODEL_COL: "a_s2", WINDOW_COL: range(4), "WQL": [1.0, 1.0, 1.0, 1.0]})
+    other = pd.DataFrame({MODEL_COL: "b_s1", WINDOW_COL: range(4), "WQL": [2.0, 2.0, 2.0, 2.0]})
+    metrics = pd.concat([baseline, seed_1, seed_2, other], ignore_index=True)
+    metrics["coverage_80"] = 0.8
+    summary, averaged = summarize_runs(metrics, {"a": ["a_s1", "a_s2"], "b": ["b_s1"]})
+    summary = summary.set_index(MODEL_COL)
+    assert summary.loc["a", "n_runs"] == 2
+    assert summary.loc["a", "WQL"] == pytest.approx(0.75)
+    assert summary.loc["a", "mean_change"] == pytest.approx(-0.25)
+    assert summary.loc["a", "skill"] == pytest.approx(0.25)
+    assert summary.loc["a", "run_skill_min"] == pytest.approx(0.0)
+    assert summary.loc["a", "run_skill_max"] == pytest.approx(0.5)
+    assert summary.loc["b", "skill"] == pytest.approx(-1.0)
+    assert summary.loc["b", "coverage_80"] == pytest.approx(0.8)
+    assert sorted(averaged[MODEL_COL].unique()) == ["a", "b", "zero-shot"]
+    assert skill_table(averaged, baseline="zero-shot")["model"].tolist() == ["a", "zero-shot", "b"]
+
+
+def test_summarize_runs_validates_groups() -> None:
+    metrics = pd.DataFrame({MODEL_COL: ["zero-shot", "a"], WINDOW_COL: [0, 0], "WQL": [1.0, 0.5]})
+    with pytest.raises(ValueError, match="groups is empty"):
+        summarize_runs(metrics, {})
+    with pytest.raises(ValueError, match="no rows for"):
+        summarize_runs(metrics, {"g": ["missing"]})
+    with pytest.raises(ValueError, match="like the baseline"):
+        summarize_runs(metrics, {"zero-shot": ["a"]})

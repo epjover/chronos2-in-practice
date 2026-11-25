@@ -69,8 +69,10 @@ __all__ = [
     "Window",
     "backtest",
     "coverage_column",
+    "error_by_step",
     "evaluate",
     "iter_windows",
+    "reliability_table",
     "rolling_origin_windows",
     "skill_score",
     "skill_table",
@@ -837,6 +839,84 @@ def summarize(metrics: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------------------------
+# Diagnostics over the scored forecasts: calibration by level, error by horizon step
+# --------------------------------------------------------------------------------------------
+
+STEP_COL = "step"
+
+
+def reliability_table(
+    forecasts: pd.DataFrame, quantile_levels: Sequence[float] = SCORED_QUANTILES
+) -> pd.DataFrame:
+    """Share of actuals at or below each forecast quantile, per model.
+
+    ``forecasts`` is the output of :func:`backtest` (forecasts with ``actual`` joined). A
+    calibrated model has ``observed`` equal to ``level`` at every level: 10% of the actuals
+    below its 0.1 quantile, 50% below its median. ``observed`` above ``level`` at the low
+    levels and below it at the high ones means intervals that are too narrow. Rows with a NaN
+    actual are left out; ``n`` counts the rows used.
+
+    Returns one row per (model, level): ``model``, ``level``, ``observed``, ``n``.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    columns = [quantile_col(level) for level in quantile_levels]
+    _check_columns(forecasts, [MODEL_COL, ACTUAL_COL, *columns], "forecasts")
+    observed = forecasts.loc[forecasts[ACTUAL_COL].notna()]
+    rows = [
+        {
+            MODEL_COL: model,
+            "level": float(level),
+            "observed": float((group[ACTUAL_COL] <= group[column]).mean()),
+            "n": len(group),
+        }
+        for model, group in observed.groupby(MODEL_COL, sort=True)
+        for level, column in zip(quantile_levels, columns, strict=True)
+    ]
+    return pd.DataFrame(rows)
+
+
+def error_by_step(forecasts: pd.DataFrame) -> pd.DataFrame:
+    """Error of each model by horizon step, pooled over windows and series.
+
+    ``step`` counts from 1 at the first forecast timestamp of each window. ``WAPE`` is the sum
+    of the point forecast's absolute errors over the sum of the absolute actuals at that step,
+    and ``WQL`` is twice the mean pinball loss over ``SCORED_QUANTILES`` over the mean absolute
+    actual, so both read as a share of the level and are comparable across steps. Rows with a
+    NaN actual are left out.
+
+    Returns one row per (model, step): ``model``, ``step``, ``WAPE``, ``WQL``, ``n``.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    keys = [MODEL_COL, WINDOW_COL, ID_COL, TARGET_NAME_COL]
+    _check_columns(
+        forecasts, [*keys, TIMESTAMP_COL, ACTUAL_COL, PREDICTION_COL, *_SCORED_COLUMNS], "forecasts"
+    )
+    forecasts = forecasts.reset_index(drop=True)
+    frame = forecasts.loc[forecasts[ACTUAL_COL].notna()].copy()
+    # The step is counted before NaN actuals are dropped, so a missing hour keeps its number.
+    frame[STEP_COL] = (
+        forecasts.groupby(keys, sort=False)[TIMESTAMP_COL].rank(method="first").astype(int)
+    )
+    actual = frame[ACTUAL_COL].to_numpy("float64")
+    frame["_abs_error"] = np.abs(actual - frame[PREDICTION_COL].to_numpy("float64"))
+    frame["_abs_actual"] = np.abs(actual)
+    quantiles = frame[_SCORED_COLUMNS].to_numpy("float64")
+    levels = np.asarray(SCORED_QUANTILES)
+    diff = actual[:, None] - quantiles
+    frame["_pinball"] = np.maximum(levels * diff, (levels - 1.0) * diff).mean(axis=1)
+    grouped = frame.groupby([MODEL_COL, STEP_COL], sort=True)
+    table = grouped.agg(
+        _abs_error=("_abs_error", "sum"),
+        _abs_actual=("_abs_actual", "sum"),
+        _pinball=("_pinball", "mean"),
+        n=("_pinball", "size"),
+    ).reset_index()
+    table["WAPE"] = table["_abs_error"] / table["_abs_actual"]
+    table["WQL"] = 2.0 * table["_pinball"] / (table["_abs_actual"] / table["n"])
+    return table[[MODEL_COL, STEP_COL, "WAPE", "WQL", "n"]]
+
+
+# --------------------------------------------------------------------------------------------
 # Skill scores
 # --------------------------------------------------------------------------------------------
 
@@ -847,6 +927,8 @@ class SkillScore:
 
     ``ci_low``/``ci_high`` bound the 95% bootstrap interval over the ``n_units`` windows;
     ``win_rate`` is the share of windows where the model beats the baseline (ties count 0.5).
+    ``block_length`` is the run of consecutive windows the bootstrap resampled together (1 =
+    windows resampled independently).
     """
 
     model: str
@@ -857,6 +939,7 @@ class SkillScore:
     ci_high: float
     win_rate: float
     n_units: int
+    block_length: int = 1
 
 
 def skill_score(
@@ -868,23 +951,39 @@ def skill_score(
     n_resamples: int = 1000,
     seed: int = SEED,
     clip: tuple[float, float] = (0.01, 100.0),
+    block_length: int = 1,
 ) -> SkillScore:
     """Skill score of ``model`` relative to ``baseline``, with a bootstrap confidence interval.
 
     Follows the fev-bench leaderboard with windows as units: the relative error of each window
     (model / baseline) is clipped to ``clip`` so a single window cannot dominate, the skill is
     ``1 - gmean(relative errors)`` (0 = as good as the baseline, 0.5 = errors halved), and
-    the 95% interval comes from ``fev.analysis.bootstrap`` over windows. Deterministic for a
-    given ``seed``. Per-target metrics must be filtered to one target first.
+    the 95% interval comes from a bootstrap over windows. Deterministic for a given ``seed``.
+    Per-target metrics must be filtered to one target first.
+
+    ``block_length=1`` resamples windows independently (``fev.analysis.bootstrap``). That is
+    right for windows far apart in time and too narrow for consecutive ones, whose errors are
+    correlated: a cold week is seven bad windows, not seven independent draws. A larger
+    ``block_length`` resamples runs of that many consecutive windows instead (circular
+    moving-block bootstrap), which keeps the correlation inside each run. The point estimate
+    is the same either way.
     """
     model_errors, baseline_errors = _paired_errors(metrics, model, baseline, metric)
     relative = _relative_errors(model_errors, baseline_errors, clip)
-    skill, ci_low, ci_high = bootstrap(
-        relative[:, None],
-        statistic=_skill,
-        n_resamples=_positive_int("n_resamples", n_resamples),
-        seed=seed,
-    )
+    n_resamples = _positive_int("n_resamples", n_resamples)
+    block_length = _positive_int("block_length", block_length)
+    if block_length > len(relative):
+        raise ValueError(
+            f"block_length={block_length} exceeds the {len(relative)} windows being resampled."
+        )
+    if block_length == 1:
+        skill, ci_low, ci_high = bootstrap(
+            relative[:, None], statistic=_skill, n_resamples=n_resamples, seed=seed
+        )
+    else:
+        skill, ci_low, ci_high = _block_bootstrap(
+            relative, block_length=block_length, n_resamples=n_resamples, seed=seed
+        )
     return SkillScore(
         model=model,
         baseline=baseline,
@@ -894,7 +993,31 @@ def skill_score(
         ci_high=float(ci_high[0]),
         win_rate=_win_rate(model_errors, baseline_errors),
         n_units=len(relative),
+        block_length=block_length,
     )
+
+
+def _block_bootstrap(
+    relative: np.ndarray, *, block_length: int, n_resamples: int, seed: int, alpha: float = 0.05
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Point estimate and (1 - alpha) interval of the skill, resampling runs of windows.
+
+    ``relative`` holds one relative error per window, ordered in time. Each resample joins
+    ``ceil(n / block_length)`` runs that start at random windows and wrap around the end (the
+    circular variant, so every window is equally likely to be drawn) and keeps the first ``n``
+    values. Same return shape as ``fev.analysis.bootstrap`` for one model.
+    """
+    n_windows = len(relative)
+    rng = np.random.default_rng(seed=seed)
+    n_blocks = -(-n_windows // block_length)
+    starts = rng.integers(0, n_windows, size=(n_resamples, n_blocks))
+    indices = (starts[:, :, None] + np.arange(block_length)) % n_windows
+    indices = indices.reshape(n_resamples, -1)[:, :n_windows]
+    resampled = _skill(relative[indices].T)
+    point = _skill(relative[:, None])
+    lower = np.quantile(resampled, 0.5 * alpha, keepdims=True)
+    upper = np.quantile(resampled, 1 - 0.5 * alpha, keepdims=True)
+    return point, lower, upper
 
 
 def skill_table(
@@ -905,6 +1028,7 @@ def skill_table(
     n_resamples: int = 1000,
     seed: int = SEED,
     clip: tuple[float, float] = (0.01, 100.0),
+    block_length: int = 1,
 ) -> pd.DataFrame:
     """:func:`skill_score` of every model in ``metrics`` (baseline included), best first."""
     _check_is_frame(metrics, "metrics")
@@ -919,6 +1043,7 @@ def skill_table(
                 n_resamples=n_resamples,
                 seed=seed,
                 clip=clip,
+                block_length=block_length,
             )
         )
         for model in sorted(metrics[MODEL_COL].unique())

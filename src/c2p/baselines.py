@@ -2,10 +2,15 @@
 
 - ``SeasonalNaive``: repeats the last season (the reference of every skill score).
 - ``AutoETS``: automatic exponential smoothing from statsforecast.
+- ``MSTL``: a decomposition with several seasonal periods (daily and weekly for hourly data),
+  the classical model that fits a series with two cycles.
 - ``ChronosBolt``: the previous Chronos generation, univariate only.
+- ``PublishedForecast``: a forecast somebody else published before the cutoff (a grid
+  operator's day-ahead forecast), replayed as a model so it can sit in the same table.
 
-All baselines are univariate: each (item, target) pair is forecast on its own, multiple targets
-are handled by a loop, and covariate columns and ``future_covariates`` are ignored.
+The first four are univariate: each (item, target) pair is forecast on its own, multiple
+targets are handled by a loop, and covariate columns and ``future_covariates`` are ignored.
+``PublishedForecast`` is the opposite: it reads only ``future_covariates``.
 """
 
 from __future__ import annotations
@@ -366,6 +371,168 @@ def _interpolate_linear(values: np.ndarray, *, label: str) -> np.ndarray:
         raise ValueError(f"Series {label} has no observed values in the context.")
     filled = pd.Series(values).interpolate(method="linear", limit_direction="both")
     return filled.to_numpy()
+
+
+# --------------------------------------------------------------------------------------------
+# MSTL
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MSTL(_StatsForecastBaseline):
+    """Multiple seasonal-trend decomposition (statsforecast ``MSTL``) with normal intervals.
+
+    The series is split by LOESS into one seasonal component per period, a trend and a
+    remainder. Each seasonal component is carried forward by repeating its last cycle, and the
+    trend plus remainder is forecast by a non-seasonal ``AutoETS``, whose intervals become the
+    quantiles (level L gives the quantiles (1 - L/100) / 2 and 1 - (1 - L/100) / 2).
+
+    This is the classical model that fits a series with a daily and a weekly cycle, which
+    ``AutoETS`` cannot represent (statsforecast's ETS stops at a period of 24).
+
+    Missing values are filled by linear interpolation, as in ``AutoETS`` and only inside this
+    baseline. Each series needs two cycles of the longest period.
+
+    Parameters
+    ----------
+    season_lengths
+        Seasonal periods in steps, e.g. ``(24, 168)`` for hourly data.
+    name
+        Model name used in results tables.
+    max_context
+        Fit on the last ``max_context`` steps of each series only; the default 2,016 is 12
+        weeks of hourly data. ``None`` uses the whole context. Must be at least
+        ``min_context``.
+    """
+
+    season_lengths: tuple[int, ...]
+    name: str = "mstl"
+    max_context: int | None = 2016
+
+    def __post_init__(self) -> None:
+        lengths = tuple(self.season_lengths)
+        if not lengths or any(
+            isinstance(n, bool) or not isinstance(n, int) or n < 2 for n in lengths
+        ):
+            raise ValueError(
+                f"season_lengths must be integers of at least 2, got {self.season_lengths!r}."
+            )
+        if len(set(lengths)) != len(lengths):
+            raise ValueError(f"season_lengths has repeated periods: {list(lengths)}.")
+        object.__setattr__(self, "season_lengths", lengths)
+        if self.max_context is not None and self.max_context < self.min_context:
+            raise ValueError(
+                f"max_context must be at least {self.min_context} (two cycles of the longest "
+                f"period, {max(lengths)} steps), got {self.max_context}."
+            )
+
+    @property
+    def min_context(self) -> int:
+        """Fewest points per series: two cycles of the longest seasonal period."""
+        return 2 * max(self.season_lengths)
+
+    def _model(self) -> sf_models.MSTL:
+        return sf_models.MSTL(
+            season_length=list(self.season_lengths),
+            trend_forecaster=sf_models.AutoETS(model="ZZN"),
+            alias="MSTL",
+        )
+
+    def _prepare_series(self, values: np.ndarray, label: str) -> np.ndarray:
+        if self.max_context is not None:
+            values = values[-self.max_context :]
+        if len(values) < self.min_context:
+            raise ValueError(
+                f"Series {label} has {len(values)} points, but MSTL(season_lengths="
+                f"{self.season_lengths}) needs at least {self.min_context}: two cycles of the "
+                "longest period."
+            )
+        return _interpolate_linear(values, label=label)
+
+
+# --------------------------------------------------------------------------------------------
+# A published forecast, replayed
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PublishedForecast:
+    """A forecast published before the cutoff, replayed as a model.
+
+    Some datasets carry the forecast a professional made at the time: the Spanish table has
+    the grid operator's day-ahead load forecast next to the load. Passing that column to the
+    backtest as a known covariate and wrapping it in this class scores it on the same windows
+    and with the same metrics as every other model, which is the strongest reference a table
+    can have.
+
+    The published value is a point forecast, so it is returned as ``predictions`` and as every
+    quantile. Read the metrics accordingly: MASE and WAPE are the published forecast's own;
+    WQL of a forecast with no spread equals its WAPE when the levels are symmetric around the
+    median, so it is still comparable with the WQL of a probabilistic model; coverage is not
+    meaningful (an interval of zero width covers nothing).
+
+    Only use it with a column that was available at the cutoff. The class cannot check that.
+
+    Parameters
+    ----------
+    column
+        Name of the known-future covariate that holds the published forecast.
+    name
+        Model name used in results tables.
+    """
+
+    column: str
+    name: str = "published_forecast"
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Return the published column of ``future_covariates`` as the forecast of one target."""
+        targets, levels = validate_forecast_inputs(
+            context,
+            target=target,
+            quantile_levels=quantile_levels,
+            prediction_length=prediction_length,
+            freq=freq,
+        )
+        if len(targets) != 1:
+            raise ValueError(
+                f"{self.name} replays one published forecast for one target, got {targets}."
+            )
+        if future_covariates is None or self.column not in future_covariates.columns:
+            raise ValueError(
+                f"{self.name} needs {self.column!r} in future_covariates: declare it in "
+                "BacktestConfig(known_covariates=...)."
+            )
+        published = future_covariates[self.column].to_numpy(dtype="float64")
+        if np.isnan(published).any():
+            raise ValueError(
+                f"{self.column!r} has missing values in the horizon; a published forecast with "
+                "holes cannot be scored as a model."
+            )
+        columns = {
+            ID_COL: future_covariates[ID_COL].to_numpy(),
+            TIMESTAMP_COL: future_covariates[TIMESTAMP_COL].to_numpy(),
+            TARGET_NAME_COL: targets[0],
+            PREDICTION_COL: published,
+        }
+        quantiles = {quantile_col(level): published for level in levels}
+        return finalize_forecast(
+            pd.DataFrame(columns | quantiles),
+            context=context,
+            targets=targets,
+            quantile_levels=levels,
+            prediction_length=prediction_length,
+            freq=freq,
+            model_name=self.name,
+        )
 
 
 # --------------------------------------------------------------------------------------------

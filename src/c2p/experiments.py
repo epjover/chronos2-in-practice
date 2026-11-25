@@ -31,6 +31,13 @@ TSO_COVARIATES: tuple[str, ...] = (
 TRAIN_END = pd.Timestamp("2017-06-30 21:00")
 VALIDATION_END = pd.Timestamp("2017-12-31 22:00")
 TEST_DAYS = 365
+# Sweeps run on a sample of the test year: one window every five days. Five and seven share no
+# factor, so the forecast day walks through the week.
+SAMPLE_STEP_DAYS = 5
+# Day-ahead windows are one day apart and their errors are correlated from one day to the next
+# (lag-1 autocorrelation of the log error ratio against the seasonal naive: 0.47). Confidence
+# intervals over those windows resample runs of seven consecutive windows.
+DAY_AHEAD_BLOCK = 7
 
 
 def day_ahead_config(
@@ -53,17 +60,31 @@ def day_ahead_config(
     )
 
 
-def weekly_sample_config(
+def rotating_sample_config(
     fast_mode: bool,
     *,
     prediction_length: int = 24,
+    step_days: int = SAMPLE_STEP_DAYS,
     target: str | tuple[str, ...] = LOAD,
     known_covariates: tuple[str, ...] = (),
     max_context: int | None = None,
 ) -> BacktestConfig:
-    """Cheaper sample of 2018 for sweeps: one window per week (52), or 6 in fast mode."""
-    n_windows = 6 if fast_mode else 52
-    step = 24 * 7 * (8 if fast_mode else 1)
+    """Cheaper sample of 2018 for sweeps: one window every ``step_days`` days.
+
+    The default of five days gives 73 windows, and each weekday is forecast ten or eleven times.
+    ``step_days`` must not be a multiple of seven: a weekly step forecasts the same weekday in
+    every window, and on Spanish load the skill against the seasonal naive runs from 53% on
+    Tuesdays to 73% on Mondays and Saturdays, so a one-weekday sample measures that weekday.
+    Use a step of at least ``prediction_length`` if the horizons must not overlap (eight days
+    for a week-ahead horizon). Fast mode keeps 6 windows, 61 days apart.
+    """
+    if step_days < 1 or step_days % 7 == 0:
+        raise ValueError(
+            f"step_days must be a positive number of days that is not a multiple of 7, got "
+            f"{step_days}: a weekly step would forecast the same weekday in every window."
+        )
+    n_windows = 6 if fast_mode else TEST_DAYS // step_days
+    step = 24 * (61 if fast_mode else step_days)
     return BacktestConfig(
         prediction_length=prediction_length,
         n_windows=n_windows,

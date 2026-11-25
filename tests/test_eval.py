@@ -26,7 +26,9 @@ from c2p.eval import (
     BacktestConfig,
     Window,
     backtest,
+    error_by_step,
     evaluate,
+    reliability_table,
     rolling_origin_windows,
     skill_score,
     skill_table,
@@ -1175,6 +1177,46 @@ def test_skill_matches_gmean_and_ci_is_reproducible() -> None:
     assert skill_score(metrics, model="m", seed=8) != score
 
 
+def test_block_bootstrap_keeps_the_estimate_and_widens_correlated_intervals() -> None:
+    rng = np.random.default_rng(3)
+    # A slow wave under the ratios: neighbouring windows share most of their error.
+    wave = np.sin(np.arange(280) / 9.0)
+    baseline = np.ones(280)
+    model = np.exp(-0.3 + 0.5 * wave + 0.05 * rng.normal(size=280))
+    metrics = metrics_frame(m=model, seasonal_naive=baseline)
+    independent = skill_score(metrics, model="m")
+    blocks = skill_score(metrics, model="m", block_length=14)
+
+    assert blocks.skill == pytest.approx(independent.skill)
+    assert blocks.win_rate == independent.win_rate
+    assert (independent.block_length, blocks.block_length) == (1, 14)
+    assert blocks.ci_low < blocks.skill < blocks.ci_high
+    assert blocks.ci_high - blocks.ci_low > 1.5 * (independent.ci_high - independent.ci_low)
+    assert skill_score(metrics, model="m", block_length=14) == blocks
+
+
+def test_block_bootstrap_agrees_with_the_independent_one_on_uncorrelated_windows() -> None:
+    rng = np.random.default_rng(5)
+    baseline = rng.uniform(0.5, 1.5, 400)
+    model = baseline * rng.uniform(0.6, 1.2, 400)
+    metrics = metrics_frame(m=model, seasonal_naive=baseline)
+    independent = skill_score(metrics, model="m", n_resamples=4000)
+    blocks = skill_score(metrics, model="m", n_resamples=4000, block_length=7)
+    assert blocks.ci_high - blocks.ci_low == pytest.approx(
+        independent.ci_high - independent.ci_low, rel=0.2
+    )
+
+
+def test_block_length_is_validated() -> None:
+    metrics = metrics_frame(m=[1.0, 2.0, 3.0], seasonal_naive=[2.0, 2.0, 2.0])
+    with pytest.raises(ValueError, match="block_length"):
+        skill_score(metrics, model="m", block_length=0)
+    with pytest.raises(ValueError, match="exceeds the 3 windows"):
+        skill_score(metrics, model="m", block_length=4)
+    table = skill_table(metrics, block_length=3)
+    assert table["block_length"].tolist() == [3, 3]
+
+
 def test_win_rate_counts_ties_as_half() -> None:
     metrics = metrics_frame(m=[1.0, 2.0, 3.0, 4.0], seasonal_naive=[1.0, 3.0, 2.0, 5.0])
     assert skill_score(metrics, model="m").win_rate == pytest.approx((2 + 0.5) / 4)
@@ -1213,6 +1255,7 @@ def test_skill_table_on_a_real_backtest() -> None:
         "ci_high",
         "win_rate",
         "n_units",
+        "block_length",
     ]
     assert table["skill"].is_monotonic_decreasing
     assert set(table["model"]) == {"seasonal_naive", "sharp", "noisy"}
@@ -1222,3 +1265,74 @@ def test_skill_table_on_a_real_backtest() -> None:
     assert (table["ci_low"] <= table["skill"] + 1e-12).all()
     assert (table["skill"] <= table["ci_high"] + 1e-12).all()
     pd.testing.assert_frame_equal(table, skill_table(metrics, baseline="seasonal_naive"))
+
+
+# --------------------------------------------------------------------------------------------
+# Diagnostics: reliability by level, error by step
+# --------------------------------------------------------------------------------------------
+
+
+def scored_frame(
+    actual: np.ndarray, quantiles: dict[float, np.ndarray], model: str
+) -> pd.DataFrame:
+    """A backtest output of one window and one series with the given values."""
+    steps = len(actual)
+    frame = pd.DataFrame(
+        {
+            MODEL_COL: model,
+            WINDOW_COL: 0,
+            ID_COL: "a",
+            TARGET_NAME_COL: "y",
+            TIMESTAMP_COL: pd.date_range("2024-01-01", periods=steps, freq="h"),
+            ACTUAL_COL: actual,
+            PREDICTION_COL: quantiles[0.5],
+        }
+    )
+    for level, values in quantiles.items():
+        frame[quantile_col(level)] = values
+    return frame
+
+
+def test_reliability_table_counts_actuals_at_or_below_each_quantile() -> None:
+    actual = np.arange(1.0, 11.0)  # 1..10
+    quantiles = {level: np.full(10, 10 * level) for level in SCORED_QUANTILES}  # 1, 2, ..., 9
+    table = reliability_table(scored_frame(actual, quantiles, "m"))
+    assert table["level"].tolist() == list(SCORED_QUANTILES)
+    assert table["observed"].tolist() == pytest.approx(list(SCORED_QUANTILES))
+    assert (table["n"] == 10).all()
+
+
+def test_reliability_table_shows_narrow_intervals_and_skips_missing_actuals() -> None:
+    actual = np.array([-2.0, -1.0, 1.0, 2.0, np.nan])
+    quantiles = {level: np.full(5, level - 0.5) for level in SCORED_QUANTILES}  # all within +-0.4
+    table = reliability_table(scored_frame(actual, quantiles, "narrow")).set_index("level")
+    assert (table["n"] == 4).all()
+    assert table.loc[0.1, "observed"] == 0.5  # half the actuals below the 0.1 quantile
+    assert table.loc[0.9, "observed"] == 0.5  # and only half below the 0.9 quantile
+
+
+def test_error_by_step_matches_the_definitions() -> None:
+    actual = np.array([10.0, 20.0, np.nan])
+    quantiles = {level: np.array([12.0, 20.0, 5.0]) for level in SCORED_QUANTILES}
+    frames = [scored_frame(actual, quantiles, "m"), scored_frame(actual, quantiles, "m")]
+    frames[1][WINDOW_COL] = 1
+    table = error_by_step(pd.concat(frames)).set_index("step")  # duplicated index on purpose
+    assert table.index.tolist() == [1, 2]  # step 3 has no actual
+    assert (table["n"] == 2).all()
+    assert table.loc[1, "WAPE"] == pytest.approx(2.0 / 10.0)
+    assert table.loc[2, "WAPE"] == 0.0
+    # A point forecast repeated at every level: pinball loss averages to |error| / 2.
+    assert table.loc[1, "WQL"] == pytest.approx(2.0 / 10.0)
+    assert table.loc[2, "WQL"] == 0.0
+
+
+def test_diagnostics_run_on_a_real_backtest() -> None:
+    df = make_series((80, 80))
+    config = BacktestConfig(prediction_length=6, n_windows=5, freq="h", season_length=4)
+    forecasts = backtest(LastValue(name="wide", spread=50.0), df, config)
+    reliability = reliability_table(forecasts)
+    assert len(reliability) == len(SCORED_QUANTILES)
+    assert reliability["observed"].is_monotonic_increasing
+    steps = error_by_step(forecasts)
+    assert steps["step"].tolist() == [1, 2, 3, 4, 5, 6]
+    assert (steps["n"] == 10).all()  # 5 windows x 2 series

@@ -20,8 +20,10 @@ from pandas.tseries.frequencies import to_offset
 from scipy.stats import norm
 
 from c2p.baselines import (
+    MSTL,
     AutoETS,
     ChronosBolt,
+    PublishedForecast,
     SeasonalNaive,
     _from_statsforecast,
     _interval_level,
@@ -173,8 +175,8 @@ def bolt_stub():
     return stub
 
 
-STAT_BASELINES = [SeasonalNaive(SEASON), AutoETS(SEASON)]
-STAT_IDS = ["seasonal_naive", "auto_ets"]
+STAT_BASELINES = [SeasonalNaive(SEASON), AutoETS(SEASON), MSTL((SEASON, 2 * SEASON))]
+STAT_IDS = ["seasonal_naive", "auto_ets", "mstl"]
 
 
 # --------------------------------------------------------------------------------------------
@@ -836,3 +838,148 @@ def test_chronos_bolt_real_model(chronos_bolt, caplog):
     np.testing.assert_allclose(forecast["0.01"], forecast["0.1"])
     np.testing.assert_allclose(forecast["0.99"], forecast["0.9"])
     np.testing.assert_allclose(forecast[quantile_col(0.5)], forecast[PREDICTION_COL])
+
+
+# --------------------------------------------------------------------------------------------
+# MSTL and the published forecast
+# --------------------------------------------------------------------------------------------
+
+
+def test_mstl_follows_a_series_with_two_cycles():
+    steps = np.arange(28 * SEASON)
+    daily = 10 * np.sin(2 * np.pi * steps / SEASON)
+    weekly = 6 * np.sin(2 * np.pi * steps / (7 * SEASON))
+    noise = np.random.default_rng(0).normal(0, 0.2, len(steps))
+    values = 100 + daily + weekly + noise
+    frame = pd.DataFrame(
+        {
+            ID_COL: "A",
+            TIMESTAMP_COL: pd.date_range("2024-03-01", periods=len(steps), freq=FREQ),
+            TARGET_COL: values,
+        }
+    )
+    context, actual = frame.iloc[:-SEASON], values[-SEASON:]
+    kwargs = {"prediction_length": SEASON, "quantile_levels": EVAL_QUANTILES, "freq": FREQ}
+    two_cycles = MSTL((SEASON, 7 * SEASON)).predict(context, **kwargs)
+    one_cycle = AutoETS(SEASON).predict(context, **kwargs)
+    error_two = np.abs(two_cycles[PREDICTION_COL].to_numpy() - actual).mean()
+    error_one = np.abs(one_cycle[PREDICTION_COL].to_numpy() - actual).mean()
+    assert error_two < 1.0
+    assert error_two < 0.5 * error_one
+
+
+def test_mstl_uses_only_the_last_max_context_steps():
+    context = make_context(n_days=20, items=("A",), nan_positions=())
+    kwargs = {"prediction_length": 6, "quantile_levels": [0.1, 0.5, 0.9], "freq": FREQ}
+    shifted = context.copy()
+    shifted.loc[shifted.index[: 10 * SEASON], TARGET_COL] += 1000.0  # before the last 10 days
+    model = MSTL((SEASON, 2 * SEASON), max_context=8 * SEASON)
+    pd.testing.assert_frame_equal(
+        model.predict(shifted, **kwargs), model.predict(context, **kwargs)
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"season_lengths": ()}, "at least 2"),
+        ({"season_lengths": (24, 1)}, "at least 2"),
+        ({"season_lengths": (24, 24)}, "repeated"),
+        ({"season_lengths": (24, 168), "max_context": 200}, "at least 336"),
+    ],
+)
+def test_mstl_validates_parameters(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        MSTL(**kwargs)
+
+
+def test_mstl_rejects_contexts_shorter_than_two_long_cycles():
+    context = make_context(n_days=6, items=("A",), nan_positions=())
+    with pytest.raises(ValueError, match="needs at least 336"):
+        MSTL((SEASON, 7 * SEASON)).predict(
+            context, prediction_length=6, quantile_levels=[0.5], freq=FREQ
+        )
+
+
+def make_published_future(context: pd.DataFrame, prediction_length: int) -> pd.DataFrame:
+    frames = []
+    for item, group in context.groupby(ID_COL, sort=False):
+        start = group[TIMESTAMP_COL].max() + to_offset(FREQ)
+        frames.append(
+            pd.DataFrame(
+                {
+                    ID_COL: item,
+                    TIMESTAMP_COL: pd.date_range(start, periods=prediction_length, freq=FREQ),
+                    "operator": np.arange(prediction_length, dtype=float) + len(frames) * 100,
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_published_forecast_replays_the_column_at_every_level():
+    context = make_context()
+    future = make_published_future(context, 6)
+    model = PublishedForecast("operator", name="tso")
+    forecast = model.predict(
+        context,
+        prediction_length=6,
+        quantile_levels=EVAL_QUANTILES,
+        freq=FREQ,
+        future_covariates=future,
+    )
+    assert isinstance(model, Forecaster)
+    assert_valid_forecast(
+        forecast, context, targets=[TARGET_COL], prediction_length=6, quantile_levels=EVAL_QUANTILES
+    )
+    assert forecast[PREDICTION_COL].tolist() == future["operator"].tolist()
+    for level in EVAL_QUANTILES:
+        assert forecast[quantile_col(level)].tolist() == future["operator"].tolist()
+
+
+def test_published_forecast_wql_equals_wape_on_the_backtest_metrics():
+    from c2p.eval import BacktestConfig, backtest, evaluate
+
+    context = make_context(n_days=10, items=("A",), nan_positions=())
+    frame = context.assign(operator=context[TARGET_COL] + 1.5)
+    config = BacktestConfig(
+        prediction_length=12,
+        n_windows=3,
+        freq=FREQ,
+        season_length=SEASON,
+        known_covariates=("operator",),
+    )
+    metrics = evaluate(backtest(PublishedForecast("operator"), frame, config), frame, config)
+    assert metrics["WQL"].to_numpy() == pytest.approx(metrics["WAPE"].to_numpy())
+    assert (metrics["coverage_80"] == 0.0).all()
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        (lambda future: None, "needs 'operator' in future_covariates"),
+        (lambda future: future.drop(columns="operator"), "needs 'operator' in future_covariates"),
+        (lambda future: future.assign(operator=np.nan), "missing values in the horizon"),
+    ],
+)
+def test_published_forecast_rejects_a_missing_or_incomplete_column(change, match):
+    context = make_context()
+    future = change(make_published_future(context, 6))
+    with pytest.raises(ValueError, match=match):
+        PublishedForecast("operator").predict(
+            context, prediction_length=6, quantile_levels=[0.5], freq=FREQ, future_covariates=future
+        )
+
+
+def test_published_forecast_rejects_several_targets():
+    context = make_context(targets=("load", "price"))
+    future = make_published_future(context, 6)
+    with pytest.raises(ValueError, match="one target"):
+        PublishedForecast("operator").predict(
+            context,
+            prediction_length=6,
+            quantile_levels=[0.5],
+            freq=FREQ,
+            target=["load", "price"],
+            future_covariates=future,
+        )

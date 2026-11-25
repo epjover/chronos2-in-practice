@@ -804,6 +804,22 @@ def test_importance_summary_reports_mean_interval_and_share_positive() -> None:
     pd.testing.assert_frame_equal(table, again)
 
 
+def test_importance_summary_widens_the_interval_for_runs_of_similar_windows() -> None:
+    from c2p.explain import importance_summary
+
+    # Twenty runs of seven equal values: consecutive windows carry the same information.
+    values = np.repeat(np.random.default_rng(0).normal(size=20), 7)
+    per_window = pd.DataFrame({"player": "p", "shapley": values})
+    single = importance_summary(per_window, value="shapley").iloc[0]
+    blocks = importance_summary(per_window, value="shapley", block_length=7).iloc[0]
+    assert blocks["mean"] == single["mean"]
+    assert blocks["ci_high"] - blocks["ci_low"] > 1.5 * (single["ci_high"] - single["ci_low"])
+    with pytest.raises(ValueError, match="block_length"):
+        importance_summary(per_window, value="shapley", block_length=0)
+    with pytest.raises(ValueError, match="exceeds"):
+        importance_summary(per_window, value="shapley", block_length=141)
+
+
 def test_importance_summary_groups_by_several_columns_and_validates() -> None:
     from c2p.explain import importance_summary
 

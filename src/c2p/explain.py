@@ -1202,6 +1202,7 @@ def importance_summary(
     n_resamples: int = 2000,
     seed: int = SEED,
     alpha: float = 0.05,
+    block_length: int = 1,
 ) -> pd.DataFrame:
     """Mean of a per-window attribution with a bootstrap interval over the windows.
 
@@ -1214,6 +1215,11 @@ def importance_summary(
     ``1 - alpha`` percentile interval of the mean, resampling windows with replacement),
     ``share_positive`` (windows in which the value is above zero) and ``n_windows``.
     Deterministic for a given ``seed``.
+
+    ``block_length`` above 1 resamples runs of that many consecutive windows instead of single
+    windows (circular moving-block bootstrap), for windows that follow each other in time and
+    whose values are therefore correlated. The rows of each group must then be in time order,
+    which is the order :func:`stack_windows` produces.
     """
     columns = [*by, value]
     missing = [column for column in columns if column not in per_window.columns]
@@ -1223,13 +1229,20 @@ def importance_summary(
         raise ValueError("per_window is empty.")
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must be in (0, 1), got {alpha}.")
+    if block_length < 1:
+        raise ValueError(f"block_length must be at least 1, got {block_length}.")
     rng = np.random.default_rng(seed)
     rows = []
     for key, group in per_window.groupby(list(by), sort=False):
         values = group[value].to_numpy("float64")
         if np.isnan(values).any():
             raise ValueError(f"{value} is NaN in some windows of {key}.")
-        draws = rng.integers(0, len(values), size=(n_resamples, len(values)))
+        if block_length > len(values):
+            raise ValueError(f"block_length={block_length} exceeds the {len(values)} windows.")
+        n_blocks = -(-len(values) // block_length)
+        starts = rng.integers(0, len(values), size=(n_resamples, n_blocks))
+        draws = (starts[:, :, None] + np.arange(block_length)) % len(values)
+        draws = draws.reshape(n_resamples, -1)[:, : len(values)]
         means = values[draws].mean(axis=1)
         labels = key if isinstance(key, tuple) else (key,)
         rows.append(

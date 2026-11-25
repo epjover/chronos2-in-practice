@@ -60,6 +60,20 @@ def test_series_frame_flattens_the_dataset() -> None:
     assert frame[TIMESTAMP_COL].dt.tz is None, "the schema uses timezone-naive timestamps"
 
 
+def test_series_frame_keeps_text_columns_as_categories() -> None:
+    class HolidayTask(FakeTask):
+        def load_full_dataset(self) -> list[dict]:
+            (record,) = super().load_full_dataset()
+            record["holiday"] = ["a" if hour % 24 == 0 else "0" for hour in range(HOURS)]
+            return [record]
+
+    task = HolidayTask(known_dynamic_columns=["load_forecast", "holiday"])
+    frame = task_series_frame(task)
+    assert frame["holiday"].dtype == "category"
+    assert sorted(frame["holiday"].cat.categories) == ["0", "a"]
+    assert frame["load_forecast"].dtype == "float64"
+
+
 def test_backtest_config_copies_the_published_spec() -> None:
     config = task_backtest_config(FakeTask())
     assert config.prediction_length == 24

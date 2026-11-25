@@ -70,20 +70,33 @@ def task_series_frame(task: fev.Task) -> pd.DataFrame:
     """Flatten a fev task's dataset into a series frame (see :mod:`c2p.schema`).
 
     One row per (series, timestamp), with the task's target and every dynamic column it
-    declares. Static columns are dropped: Chronos-2 takes covariates as series, and a constant
-    per series carries no information for a single-series task.
+    declares. Numeric columns become ``float64``; a dynamic column of strings (a holiday type,
+    a promotion code) becomes a ``category``, which is how Chronos-2 is told to treat it as
+    categorical. Static columns are dropped: Chronos-2 takes covariates as series, and a
+    constant per series carries no information for a single-series task.
     """
     dataset = task.load_full_dataset()
     columns = [task.target, *task.known_dynamic_columns, *task.past_dynamic_columns]
     frames = []
     for record in dataset:
         timestamps = pd.DatetimeIndex(record[task.timestamp_column]).tz_localize(None)
-        values = {column: np.asarray(record[column], dtype="float64") for column in columns}
+        values = {column: _dynamic_values(record[column]) for column in columns}
         frames.append(
             pd.DataFrame({ID_COL: str(record[task.id_column]), TIMESTAMP_COL: timestamps, **values})
         )
     frame = pd.concat(frames, ignore_index=True)
+    for column in columns:
+        if not pd.api.types.is_numeric_dtype(frame[column]):
+            frame[column] = frame[column].astype("category")
     return frame.sort_values([ID_COL, TIMESTAMP_COL], kind="stable", ignore_index=True)
+
+
+def _dynamic_values(values: object) -> np.ndarray:
+    """A dynamic column of one record as float64, or as strings when it is not numeric."""
+    array = np.asarray(values)
+    if array.dtype.kind in "biuf":
+        return array.astype("float64")
+    return array.astype(object)
 
 
 def task_backtest_config(

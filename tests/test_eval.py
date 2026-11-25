@@ -27,6 +27,7 @@ from c2p.eval import (
     Window,
     average_runs,
     backtest,
+    error_by_series,
     error_by_step,
     evaluate,
     reliability_table,
@@ -1326,6 +1327,32 @@ def test_error_by_step_matches_the_definitions() -> None:
     # A point forecast repeated at every level: pinball loss averages to |error| / 2.
     assert table.loc[1, "WQL"] == pytest.approx(2.0 / 10.0)
     assert table.loc[2, "WQL"] == 0.0
+
+
+def test_error_by_series_gives_one_row_per_model_and_series() -> None:
+    actual = np.array([10.0, 20.0, np.nan])
+    quantiles = {level: np.array([12.0, 20.0, 5.0]) for level in SCORED_QUANTILES}
+    first = scored_frame(actual, quantiles, "m")
+    second = scored_frame(actual * 2, quantiles, "m").assign(**{ID_COL: "b"})
+    table = error_by_series(pd.concat([first, second])).set_index(ID_COL)
+    assert table.index.tolist() == ["a", "b"]
+    assert (table["n"] == 2).all()
+    assert table.loc["a", "WAPE"] == pytest.approx(2.0 / 30.0)
+    assert table.loc["b", "WAPE"] == pytest.approx((8.0 + 20.0) / 60.0)
+    assert table.loc["a", "WQL"] == pytest.approx(2.0 / 30.0)  # a point forecast: WQL = WAPE
+
+
+def test_skill_can_resample_series_instead_of_windows() -> None:
+    rows = [
+        {MODEL_COL: model, ID_COL: series, "WQL": error}
+        for model, errors in (("base", (1.0, 2.0, 4.0)), ("half", (0.5, 1.0, 2.0)))
+        for series, error in zip("abc", errors, strict=True)
+    ]
+    table = skill_table(pd.DataFrame(rows), baseline="base", unit=ID_COL).set_index(MODEL_COL)
+    assert table.loc["half", "skill"] == pytest.approx(0.5)
+    assert table.loc["half", "n_units"] == 3
+    with pytest.raises(ValueError, match="window"):
+        skill_table(pd.DataFrame(rows), baseline="base")  # no window column
 
 
 def test_diagnostics_run_on_a_real_backtest() -> None:

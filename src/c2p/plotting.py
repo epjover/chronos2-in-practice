@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
 import matplotlib as mpl
 import matplotlib.dates as mdates
@@ -129,7 +129,8 @@ MARKER_SIZE = 6.0
 FONT_FAMILY: tuple[str, ...] = ("Segoe UI", "DejaVu Sans")  # first one found wins, no warning
 LEGEND_FONT_SIZE = 9.5
 
-STYLE: Mapping[str, object] = MappingProxyType(
+# Keys are matplotlib's rcParams names, which its stubs type as one long Literal: hence Any.
+STYLE: Mapping[Any, Any] = MappingProxyType(
     {
         "font.family": "sans-serif",
         "font.sans-serif": list(FONT_FAMILY),
@@ -316,7 +317,7 @@ class _CompactFormatter(Formatter):
         return format_compact(x)
 
     def format_ticks(self, values: Sequence[float]) -> list[str]:
-        self.set_locs(values)
+        self.set_locs(list(values))
         labels = [format_compact(value) for value in values]
         if len(set(labels)) == len(labels):
             return labels
@@ -520,9 +521,17 @@ def _points(size: float | str) -> float:
     return float(FontProperties(size=size).get_size_in_points())
 
 
+def _root_figure(ax: Axes) -> Figure:
+    """The figure an axes is drawn on; an axes removed from its figure has none."""
+    fig = ax.get_figure(root=True)
+    if fig is None:
+        raise ValueError("The axes is not attached to a figure.")
+    return fig
+
+
 def set_axes_title(ax: Axes, title: str, *, pad: float | None = None) -> None:
     """Left-aligned axes title, wrapped so it is never wider than the axes."""
-    fig = ax.get_figure(root=True)
+    fig = _root_figure(ax)
     fig.draw_without_rendering()  # the axes' final width under constrained layout
     width = ax.get_window_extent().width / fig.dpi
     wrapped = wrap_to_width(
@@ -547,7 +556,7 @@ def _legend_above(
     """
     legend = _fit_legend_above(ax, handles, labels)
     if title is not None:
-        height = legend.get_window_extent().height * 72 / ax.get_figure(root=True).dpi
+        height = legend.get_window_extent().height * 72 / _root_figure(ax).dpi
         set_axes_title(ax, title, pad=height + _TITLE_GAP_POINTS)
 
 
@@ -555,7 +564,7 @@ def _fit_legend_above(ax: Axes, handles: Sequence[Artist], labels: Sequence[str]
     """Draw the legend with the most columns whose width fits the laid-out axes."""
     if not handles:
         raise ValueError("A legend needs at least one entry.")
-    ax.get_figure(root=True).draw_without_rendering()  # the axes' final width, without legend
+    _root_figure(ax).draw_without_rendering()  # the axes' final width, without legend
     available = ax.get_window_extent().width
     for ncols in range(len(handles), 0, -1):
         legend = ax.legend(
@@ -1155,7 +1164,7 @@ def _draw_benchmark_panel(
         # would run into the model names.
         ax.text(
             max(v, 0.0) + label_offset,
-            y,
+            float(y),
             value_format.format(v),
             va="center",
             ha="left",

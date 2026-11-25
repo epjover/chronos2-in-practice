@@ -54,7 +54,7 @@ def device_label(row: Mapping[str, object]) -> str:
     cpu = re.sub(r"\(R\)|\(TM\)|\d+th Gen |Processor", "", str(row.get("cpu") or ""))
     cpu = re.sub(r"\s+", " ", cpu).strip() or "CPU"
     threads = row.get("torch_threads")
-    suffix = f", {int(threads)} threads" if threads not in (None, "") else ""
+    suffix = f", {int(float(str(threads)))} threads" if threads not in (None, "") else ""
     return f"{model} on {cpu}{suffix}"
 
 

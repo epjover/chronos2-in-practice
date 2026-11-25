@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def cpu_model() -> str:
             return subprocess.check_output(
                 ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=5
             ).strip()
-        elif system == "Windows":
+        elif sys.platform == "win32":  # spelled this way so type checkers skip it elsewhere
             import winreg
 
             key = winreg.OpenKey(

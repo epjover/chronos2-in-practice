@@ -715,15 +715,16 @@ def _float32_precision_restored(*, enable_tf32: bool) -> Iterator[None]:
     settings. Without this, every later GPU forecast would run in TF32 (measured: up to 0.3%
     different), and a second fine-tune in the same process would train without TF32.
     """
+    # ``fp32_precision`` is newer than the type stubs PyTorch ships, hence getattr/setattr.
     backends = (torch.backends, torch.backends.cuda.matmul, torch.backends.cudnn)
-    saved = [backend.fp32_precision for backend in backends]
+    saved = [getattr(backend, "fp32_precision") for backend in backends]  # noqa: B009
     if enable_tf32:
-        torch.backends.fp32_precision = "tf32"
+        setattr(torch.backends, "fp32_precision", "tf32")  # noqa: B010
     try:
         yield
     finally:
         for backend, value in zip(backends, saved, strict=True):
-            backend.fp32_precision = value
+            setattr(backend, "fp32_precision", value)  # noqa: B010
 
 
 def _reset_peak_memory(device: torch.device) -> None:

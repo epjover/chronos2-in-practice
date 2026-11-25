@@ -100,6 +100,12 @@ convention = "numpy"
 # The audit compares against the articles' typography: true minus, en dash, multiplication sign.
 "scripts/audit_articles.py" = ["RUF001", "RUF002"]
 
+[tool.mypy]
+# Run in CI with `uv run --with mypy mypy`: mypy is not a project dependency.
+python_version = "3.11"
+files = ["src/c2p"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Slow tests download models or datasets; run them with `uv run pytest -m slow`.

@@ -23,10 +23,12 @@ import pandas as pd
 from matplotlib.axes import Axes
 
 from c2p.plotting import (
+    AQUA,
     BLUE,
     INK_PRIMARY,
     INK_SECONDARY,
     NEUTRAL_BAR,
+    ORANGE,
     _legend_above,
     _style_axes,
     set_axes_title,
@@ -270,6 +272,8 @@ _MODEL_STYLES = {
     "zero-shot": (INK_SECONDARY, "solid"),
     "conformal_additive": (BLUE, "solid"),
     "conformal_scaled": (BLUE, (0, (4, 2))),
+    "conformal_rolling": (ORANGE, "solid"),
+    "conformal_aci": (AQUA, "solid"),
 }
 
 

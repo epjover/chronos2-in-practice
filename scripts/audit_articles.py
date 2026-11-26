@@ -408,9 +408,9 @@ def article_5(r: Results) -> Iterator[str]:
             speed = rows.set_index("batch_size")["series_per_second"]
             cells = " | ".join(f"{half_up(speed[batch], 1)}/s" for batch in (1, 8, 32, 128))
             yield f"| {name}, {label} | {cells} | {half_up(speed.max(), 0)}/s |"
-    small = r("bench_small_vs_base_metrics")
+    small = r("bench_variants_metrics")
     means = small.groupby("model")[["WQL", "coverage_80"]].mean()
-    k = r("bench_small_vs_base_skill").set_index("model").loc["chronos-2-small"]
+    k = r("bench_variants_skill").set_index("model").loc["chronos-2-small"]
     naive = r("02_backtest_metrics")
     naive = naive.loc[naive["model"] == "seasonal_naive"].set_index("cutoff")["WQL"]
     base, tiny = means.loc["chronos-2"], means.loc["chronos-2-small"]

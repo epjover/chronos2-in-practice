@@ -120,13 +120,14 @@ other side.
 **The small checkpoint runs more than three times faster and comes in roughly a quarter worse.**
 `chronos-2-small` is 3.3× faster on the GPU and 3.5× faster on the CPU at 2,048 hours. Part 1
 promised the other half of that trade, so
-[`bench/small_vs_base_accuracy.py`](../bench/small_vs_base_accuracy.py) runs both checkpoints
-through Part 2's protocol, using the same 365 day-ahead windows and 2,048 hours of context:
+[`bench/cheaper_variants_accuracy.py`](../bench/cheaper_variants_accuracy.py) runs both
+checkpoints through Part 2's protocol, using the same 365 day-ahead windows and 2,048 hours of
+context, with the interval resampled in blocks of seven days as in Part 2:
 
 | Checkpoint | Params | WQL | 80% coverage | Skill vs `chronos-2` [95% CI] | Wins | Skill vs seasonal naive |
 | --- | ---: | ---: | ---: | --- | ---: | ---: |
 | `chronos-2` | 119.5M | 0.0388 | 73.4% | n/a | n/a | 63.9% |
-| `chronos-2-small` | 27.9M | 0.0426 | 71.5% | **−24.8%** [−30.0, −20.3] | 29% | 54.9% |
+| `chronos-2-small` | 27.9M | 0.0426 | 71.5% | **−24.8%** [−31.5, −18.7] | 29% | 54.9% |
 
 That is a real cost. On the typical window the small model's quantile loss comes in a quarter
 higher, and the interval is nowhere near zero. But it is also still 55% better than the seasonal

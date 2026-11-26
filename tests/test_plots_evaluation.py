@@ -116,6 +116,9 @@ def test_skill_scores_drops_the_baseline_and_labels_win_rates(skill: pd.DataFram
         assert labels[-1] == "chronos-2", "best model goes on top"
         annotations = " ".join(text.get_text() for text in ax.texts)
         assert "42.0  (91% of windows)" in annotations
+        by_store = plot_skill_scores(skill, units="stores")
+        assert "(91% of stores)" in " ".join(text.get_text() for text in by_store.texts)
+        plt.close(by_store.figure)
         assert "Skill score vs seasonal_naive" in ax.get_xlabel()
     finally:
         plt.close(ax.figure)

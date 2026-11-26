@@ -190,6 +190,7 @@ def plot_skill_scores(
     drop_baseline: bool = True,
     title: str | None = None,
     xlabel: str | None = None,
+    units: str = "windows",
     ax: Axes | None = None,
 ) -> Axes:
     """Horizontal bars of skill score per model with their bootstrap intervals.
@@ -197,7 +198,8 @@ def plot_skill_scores(
     ``skill`` is the output of ``c2p.eval.skill_table``: one row per model with ``skill``,
     ``ci_low``, ``ci_high``, ``win_rate`` and ``baseline``. Skills are drawn as percentages,
     sorted best first, with the win rate printed at the right. The baseline itself sits at
-    exactly 0 by construction and is dropped by default.
+    exactly 0 by construction and is dropped by default. ``units`` names what the win rate
+    counts: windows, or the series of a panel when ``skill_table`` was given ``unit=``.
     """
     required = ["model", "skill", "ci_low", "ci_high", "win_rate", "baseline"]
     missing = [column for column in required if column not in skill.columns]
@@ -211,7 +213,7 @@ def plot_skill_scores(
     with style_context():
         if ax is None:
             _, ax = plt.subplots(figsize=(8.0, 0.46 * len(rows) + 1.5), layout="constrained")
-        _draw_skill_bars(ax, rows, highlight)
+        _draw_skill_bars(ax, rows, highlight, units)
         _style_axes(ax, grid="none")
         ax.axvline(0, color=AXIS_COLOR, linewidth=1.0)
         ax.set_xlabel(
@@ -222,7 +224,7 @@ def plot_skill_scores(
     return ax
 
 
-def _draw_skill_bars(ax: Axes, rows: pd.DataFrame, highlight: str) -> None:
+def _draw_skill_bars(ax: Axes, rows: pd.DataFrame, highlight: str, units: str) -> None:
     positions = np.arange(len(rows))
     skills = 100 * rows["skill"].to_numpy(dtype="float64")
     low = 100 * rows["ci_low"].to_numpy(dtype="float64")
@@ -246,8 +248,8 @@ def _draw_skill_bars(ax: Axes, rows: pd.DataFrame, highlight: str) -> None:
         positions, skills, high, is_highlight, rows["win_rate"], strict=True
     ):
         ax.annotate(
-            f"{value:.1f}  ({win:.0%} of windows)",
-            (hi + 0.02 * span, y),
+            f"{value:.1f}  ({win:.0%} of {units})",
+            (max(hi, 0.0) + 0.02 * span, y),  # right of the zero line when the bar is negative
             va="center",
             ha="left",
             fontsize=9.5,

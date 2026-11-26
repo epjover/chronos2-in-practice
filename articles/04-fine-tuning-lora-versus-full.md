@@ -76,7 +76,9 @@ Without this, validation loss measures how well the model can continue a series 
 partway through, and that isn't the task.
 
 The validation period is used twice. The 702 windows above (27 weekly cutoffs of 26 series) give
-the loss that stops the training. The same half-year also gets the backtest of Part 2, 184
+the loss that stops the training. Weekly cutoffs all forecast the same weekday, a Saturday here,
+which Part 2 would not accept for a score; here they only decide at which step a run stops. The
+same half-year also gets the backtest of Part 2, 184
 day-ahead windows of the load, and that backtest is what chooses between configurations in
 section 4. The test year is opened once those choices are made.
 

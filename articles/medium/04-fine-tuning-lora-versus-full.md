@@ -2,8 +2,9 @@
 
 **At the library's defaults, a 4.6 MB LoRA adapter buys 2.7% over zero-shot, and training all 119
 million weights buys 2.0% with a checkpoint a hundred times larger. A learning rate ten times
-higher, chosen on a validation half-year, buys 8.0%: less than half of what that half-year
-promised, and at the price of 3.6% on data the adapter never saw.**
+higher and a longer budget, chosen on a validation half-year, buy 8.0%: less than half of what
+that half-year promised, nearly all of it on the hardest third of the days, and at the price of
+3.6% on temperature series the adapter was never trained on.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
@@ -199,9 +200,9 @@ library's defaults stop while the loss is still falling, so whether more trainin
 question, and the test year is not the place to answer it.
 
 The candidates are rank 8 with one seed: the default budget, four times the steps, ten times the
-learning rate, and both. Each is scored on the **validation backtest** (the 184 day-ahead windows of the second half of
-2017, against the zero-shot model on those windows). The test scores are computed in the same pass
-and shown beside them, but the choice reads only the validation column
+learning rate, and both. Each is scored on the **validation backtest** (the 184 day-ahead windows
+of the second half of 2017, against the zero-shot model on those windows). The test scores are
+computed in the same pass and shown beside them, but the choice reads only the validation column
 ([`07_budget_validation.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/07_budget_validation.csv),
 [`07_budget_test.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/07_budget_test.csv)):
 
@@ -215,25 +216,25 @@ ends the run at step 2,500), and the validation skill goes from 1.9% to 19.2%. T
 last row.
 
 **The validation half-year promised more than twice what the test year delivered.** +19.2% became
-+8.3%. The ranking carried over, the size did not. The validation half-year starts the hour after
++8.3%. The winner carried over, the size did not. The validation half-year starts the hour after
 the training data end, the test year starts six months later, and the configuration was selected
-for doing well on the first. A gain measured on the period that chose it is an upper bound, and
-this is by how much.
+for doing well on the first. A gain measured on the period that chose it is optimistic, and here
+it was optimistic by more than a factor of two. The search is also part of the price: the three extra
+candidates took 38 minutes of GPU between them.
 
 **The chosen budget with three seeds, on the test year**
 ([`07_tuned_summary.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/07_tuned_summary.csv)): +8.0% [+2.3, +13.3], with single runs
-between +8.3% and +9.8%. The average sits just below every single run because it is taken window
-by window: each run has its own bad days. The mean WQL falls by 12.9%, more than the skill, which
-says where the gain is. The skill weighs every day equally and the mean is dominated by the bad
-ones, so the adapter helps most on the days the zero-shot model handled worst. The 80% interval
-now covers 70.2%.
+between +8.3% and +9.8%. The three-seed figure sits just below every single run because the runs
+are averaged window by window before the ratio is taken, and the windows on which one seed does
+badly are not the ones on which another does. The 80% interval now covers 70.2%.
 
 ## 5. Full fine-tuning: a hundred times the artifact
 
 Full fine-tuning updates all 119,477,664 parameters, at a learning rate ten times lower than
 LoRA's. 1e-6 is the default of `Chronos2Pipeline.fit`, and its documentation recommends the higher
-rate only for LoRA: with the pretrained weights themselves moving, a rate that suits a small adapter
-moves the model off the representation it was pretrained into.
+rate only for LoRA. The usual reasoning is that with the pretrained weights themselves moving, a
+rate that suits a small adapter can move the model off what it learned in pretraining; this series
+did not try a higher rate for the full fine-tune.
 
 ```python
 full = finetune(
@@ -265,11 +266,31 @@ full = finetune(
 
 *Table 6. Columns: Model, Train time, Peak VRAM, Artifact, Latency per window.*
 
-At the library's defaults, training 100% of the weights instead of 1% buys nothing measurable:
-+2.0% against +2.7%, with an interval that includes zero, the lowest coverage of the three, and a
-456 MB checkpoint in place of a 4.6 MB adapter. The full fine-tune was not given a budget search
-of its own, so this is a statement about the defaults and not about what full fine-tuning can
-reach.
+Each interval above is against the zero-shot model, and two intervals that overlap do not say
+which of two fine-tunes is better. The paired comparison on the same windows does
+([`08_paired_skill.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/08_paired_skill.csv)). The adapter with the chosen budget
+against the default one: +5.5% [+0.6, +10.0]. The full fine-tune against the default adapter:
+−0.7% [−3.0, +1.5].
+
+So at the library's defaults, training 100% of the weights instead of 1% buys nothing
+measurable, and it brings the lowest coverage of the three and a 456 MB checkpoint in place of a
+4.6 MB adapter. The full fine-tune was not given a budget search of its own, so this is a
+statement about the defaults and not about what full fine-tuning can reach.
+
+**The gain is on the hard days.** Split the 365 windows into thirds by the error of the seasonal
+naive, a model outside the comparison (thirds by the zero-shot model's own error would flatter
+every alternative), and score each third separately
+([`08_gain_by_difficulty.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/08_gain_by_difficulty.csv)):
+
+![Table 7: articles/medium/tables/04_table_7.png](tables/04_table_7.png)
+
+*Table 7. Columns: Days, by the seasonal naive's error, Zero-shot WQL, LoRA, defaults, LoRA, chosen budget, Full, defaults.*
+
+On two thirds of the days no fine-tune can be told from the zero-shot model. The gain is on the
+days that least resemble the day before, where the zero-shot error is five times that of the easy
+days, and there the adapter with the chosen budget cuts it by more than a fifth. It is also why
+its mean WQL falls by 12.9% while its skill, which weighs every day equally, is 8.0%. Within a
+third the windows are not consecutive, so these intervals resample single windows and not blocks.
 
 Inference latency is the same for all three, 35 ms per window. That is the time the backtest
 harness spends on each window, its own checks and frame handling included, which is why it sits
@@ -289,15 +310,15 @@ across 2018, one every five days.
 *Figure 3. Out-of-domain check on hourly temperature for five Spanish cities, 73 windows.
 Positive is better than zero-shot.*
 
-![Table 7: articles/medium/tables/04_table_7.png](tables/04_table_7.png)
+![Table 8: articles/medium/tables/04_table_8.png](tables/04_table_8.png)
 
-*Table 7. Columns: Model, WQL on temperature, Skill vs zero-shot [95% CI], Single runs, Wins.*
+*Table 8. Columns: Model, WQL on temperature, Skill vs zero-shot [95% CI], Single runs, Wins.*
 
 **The run that learned the most forgot the most.** The two fine-tunes at the library's defaults
 did not get worse on temperature; the default LoRA is even slightly better, plausibly because
 temperature and electricity share a daily cycle (the experiment does not test that explanation).
-The adapter with the larger budget is 3.6% worse,
-with an interval that excludes zero, on all three seeds. That is catastrophic forgetting in its
+The adapter with the larger budget is 3.6% worse, with an interval that excludes zero, and each of
+its three seeds is worse on its own. That is catastrophic forgetting in its
 mild form (the loss of earlier abilities when a network is trained on something new; Kirkpatrick
 et al., 2017), and it arrives with the gain, not with the number of weights trained.
 
@@ -312,7 +333,7 @@ series, which is what a 4.6 MB artifact makes cheap, there is nothing to trade.
 Day-ahead national load is a series on which zero-shot is already good, which makes it a hard place
 to show what fine-tuning adds. The price of Part 3 is the other case: the zero-shot error is
 larger, and the model has to use three covariates (the operator's forecasts of load, wind and
-solar) that it has never been trained on.
+solar) whose relation to the price it can only read from the context.
 
 `Chronos2Pipeline.fit` takes the same structure as prediction: a target, its past covariates and
 the covariates whose future is known.
@@ -331,13 +352,14 @@ The training set is now one series with its covariates, the reference is the zer
 *with the same covariates*, and the learning rate is chosen on the validation backtest as before
 ([`08_price_summary.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/08_price_summary.csv)):
 
-![Table 8: articles/medium/tables/04_table_8.png](tables/04_table_8.png)
+![Table 9: articles/medium/tables/04_table_9.png](tables/04_table_9.png)
 
-*Table 8. Columns: Model, WQL, Validation skill [95% CI], Test skill [95% CI], 80% coverage.*
+*Table 9. Columns: Model, WQL, Validation skill [95% CI], Test skill [95% CI], 80% coverage.*
 
 Fine-tuning adds +4.9% on top of the covariates, with an interval clear of zero, from one series
-and five minutes of training. Here the validation half-year predicted the test year almost to the
-decimal (+5.1% against +4.9%), which it did not on the load. One experiment each way is not
+and five minutes of training. The validation column is the seed that made the choice; the test
+column of the last row averages three. Here the validation half-year predicted the test year
+almost to the decimal (+5.1% against +4.9%), which it did not on the load. One experiment each way is not
 enough to say when a validation gain transfers; it is enough to say that it has to be checked.
 
 ## 8. The decision
@@ -345,9 +367,9 @@ enough to say when a validation gain transfers; it is enough to say that it has 
 Put this article's gains next to the earlier ones, all measured on the same Spanish data with the
 same protocol:
 
-![Table 9: articles/medium/tables/04_table_9.png](tables/04_table_9.png)
+![Table 10: articles/medium/tables/04_table_10.png](tables/04_table_10.png)
 
-*Table 9. Columns: Change, Gain, Measured as, Cost.*
+*Table 10. Columns: Change, Gain, Measured as, Cost.*
 
 The first row sits on a different scale from the rest: points of skill against a naive baseline,
 not a relative improvement over the previous setting. It is in the table because it is the
@@ -407,6 +429,7 @@ yourself. The snippet follows AutoGluon's documentation [5]; this series did not
 - Do not stop at the library's default budget. Try a learning rate of 1e-4 and more steps, and choose on a validation backtest, never on the test year.
 - Expect the test gain to be smaller than the validation gain that chose it.
 - Train three seeds before you quote a number, and report the range of the single runs.
+- Compare two fine-tunes with a paired skill on the same windows, and look at which days carry the gain.
 - Check `coverage_80`: fine-tuning narrows the intervals.
 - Run an out-of-domain check before one fine-tuned model serves more than the series it was trained on.
 

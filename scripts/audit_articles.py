@@ -431,6 +431,18 @@ def article_4(r: Results) -> Iterator[str]:
             f"{half_up(k['artifact_mb'], 1)} MB",
             f"{half_up(k['latency_ms'], 0)} ms",
         )
+    paired = r("08_paired_skill").set_index("model")
+    yield f"against the default one: {interval(paired.loc['lora_tuned'])}"
+    yield interval(paired.loc["full"])
+    for days, rows in r("08_gain_by_difficulty").groupby("days", sort=False):
+        k = rows.set_index("model")
+        yield table_row(
+            days,
+            half_up(k["zero_shot_wql"].iloc[0], 4),
+            *(interval(k.loc[model]) for model in ("lora_r8", "lora_tuned", "full")),
+        )
+    searched = r("07_budget_costs")["train_seconds"].iloc[1:].sum() / 60
+    yield f"took {half_up(searched, 0)} minutes of GPU"
     away = r("08_forgetting_summary").set_index("model")
     away_zero = r("08_forgetting_metrics")
     away_zero = away_zero.loc[away_zero["model"] == "zero-shot", "WQL"].mean()

@@ -375,8 +375,9 @@ read from a results file by
 | Covariates the market knows in advance | +49.5% [+37.0, +59.4] | WQL against no covariates, EPF-DE price | Part 3 |
 | The operator's forecasts as covariates | +10.9% [+6.2, +15.1] | WQL against no covariates, Spanish price | Part 3 |
 | Forecasting the operator's error instead of the load | +21.4% [+19.4, +23.3] | WQL against the operator's forecast, Spanish load | Part 3 |
-| LoRA rank 8, library defaults | +2.3% [−0.2, +4.6] | WQL against zero-shot, Spanish load | Part 4 |
-| Full fine-tune, 119M weights | +1.7% [−2.7, +5.6] | WQL against zero-shot, Spanish load | Part 4 |
+| LoRA rank 8, library defaults | +2.7% [+0.4, +4.8] | WQL against zero-shot, Spanish load | Part 4 |
+| LoRA rank 8, budget chosen on validation | +8.0% [+2.3, +13.3] | WQL against zero-shot, Spanish load | Part 4 |
+| Full fine-tune, 119M weights | +2.0% [−2.0, +5.8] | WQL against zero-shot, Spanish load | Part 4 |
 | A GPU instead of 8 CPU cores | 16.5× the throughput | series per second, same model and context | Part 5 |
 | `chronos-2-small` instead of `chronos-2` | 3.3× the throughput, −24.8% [−31.5, −18.7] | WQL against the base model, Spanish load | Part 5 |
 | Conformal correction, learned once | 73.4% → 83.2% | coverage of the 80% interval over the year | Part 6 |
@@ -387,8 +388,9 @@ read from a results file by
 
 The rows sit on different scales and different targets. What the table shows is an ordering, not
 a sum. The large effects come from giving the model something: enough history, a regular grid,
-the future values of what is known. Changing the weights moved the number least, and a smaller
-model moved it down.
+the future values of what is known. Changing the weights moved the number less: two to three
+percent at the library's defaults, 8% with a budget chosen on a validation period, and that
+adapter was worse on a series it was not trained on. A smaller model moved the number down.
 
 What did not move it is as useful to know. Forecasting load jointly with price
 (−1.3% [−4.5, +1.8]). Calendar features on top of a model that already reads the clock

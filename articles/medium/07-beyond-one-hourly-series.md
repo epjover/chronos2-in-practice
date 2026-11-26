@@ -350,8 +350,9 @@ read from a results file by
 
 The rows sit on different scales and different targets. What the table shows is an ordering, not
 a sum. The large effects come from giving the model something: enough history, a regular grid,
-the future values of what is known. Changing the weights moved the number least, and a smaller
-model moved it down.
+the future values of what is known. Changing the weights moved the number less: two to three
+percent at the library's defaults, 8% with a budget chosen on a validation period, and that
+adapter was worse on a series it was not trained on. A smaller model moved the number down.
 
 What did not move it is as useful to know. Forecasting load jointly with price
 (−1.3% [−4.5, +1.8]). Calendar features on top of a model that already reads the clock

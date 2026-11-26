@@ -119,11 +119,13 @@ first time in an episode:
 3. Promote the new adapter only if the interval excludes zero and the coverage of the 80% band
    is not worse. Otherwise keep what is deployed.
 
-The held-out weeks matter: an adapter scored on windows it was trained on will always look better.
-And step 3 will usually say no. Part 4's fine-tuning gains on this series are a few percent, and a
-few weeks of daily windows cannot separate a few percent from zero; Part 2 needed a full year to
-put an interval of twelve points around a skill score. That is the rule working as intended. It
-exists to stop a reflexive retrain after a cold week, not to schedule one.
+The held-out weeks matter: an adapter scored on windows it was trained on will always look better,
+and Part 4's adapter kept less than half of the gain its validation period had shown. Step 3 will
+also usually say no. Part 4's fine-tuning gains on this series run from 2% to 8% with intervals
+several points wide on a full year of windows, and a few weeks of daily windows cannot separate
+gains of that size from zero; Part 2 needed a full year to put an interval of twelve points around
+a skill score. That is the rule working as intended. It exists to stop a reflexive retrain after a
+cold week, not to schedule one.
 
 What a breach episode in winter does call for is cheaper than a new adapter. In the four episodes
 of 2018 the model was more confident than it should have been, which is a calibration problem, and

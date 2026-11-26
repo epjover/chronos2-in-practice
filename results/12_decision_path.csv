@@ -3,7 +3,7 @@ data,"on Spanish load, dropping the rows of the missing hours cost +104% WQL; le
 baseline,"zero-shot Chronos-2 cut the seasonal naive's error by 64%; the grid operator's own forecast, by 87%"
 covariates,"on price, the operator's forecasts +10.9% and the calendar −0.2%; on load, correcting the operator's forecast +21.4% over it"
 context,"skill 25% at 64 hours, 63% at 1,024, 65% at 2,048 and 66% at 8,192"
-finetune,"LoRA at the library defaults +2.3% [−0.2, +4.6]; a full fine-tune +1.7% [−2.7, +5.6]"
+finetune,"LoRA at the library defaults +2.7% [+0.4, +4.8]; LoRA with a tuned budget +8.0% [+2.3, +13.3]; a full fine-tune +2.0% [−2.0, +5.8]"
 calibration,the 80% interval covered 73.4% zero-shot and 83.2% corrected once; its worst month went from 56.1% to 74.0% when updated daily
 serving,a GPU gave 16.5× the throughput of 8 CPU cores; from $0.95 per million forecasts on an always-on ml.g4dn.xlarge
 monitoring,"replaying 2018, 13 of 365 cutoffs crossed a threshold, in 4 episodes: 4 alerts to send, not 13"

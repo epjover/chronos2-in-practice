@@ -1,4 +1,4 @@
-model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units
-known_future,univariate,WQL,0.49492960924740115,0.3702871259789345,0.5938201006323247,0.95,20
-past_only,univariate,WQL,0.1098850393540658,0.05107810851001866,0.16073699553449783,0.7,20
-univariate,univariate,WQL,0.0,0.0,0.0,0.5,20
+model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length
+known_future,univariate,WQL,0.49492966851871456,0.3702872347018425,0.5938201673205067,0.95,20,1
+past_only,univariate,WQL,0.10988503556842,0.05107804577305595,0.1607371290314173,0.7,20,1
+univariate,univariate,WQL,0.0,0.0,0.0,0.5,20,1

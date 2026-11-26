@@ -1,0 +1,5 @@
+model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length
+"operator forecast, corrected",operator forecast,WQL,0.21375339588456965,0.1942146871355656,0.23328595003503966,0.9123287671232877,365,7
+operator forecast,operator forecast,WQL,0.0,0.0,0.0,0.5,365,7
+operator forecast as covariate,operator forecast,WQL,-0.0781670261497669,-0.13925017648631607,-0.02067953125494819,0.4575342465753425,365,7
+history only,operator forecast,WQL,-1.693531770059006,-2.296117792147814,-1.1969205827510725,0.18082191780821918,365,7

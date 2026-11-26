@@ -17,6 +17,7 @@ wrong.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -624,6 +625,25 @@ class ResidualForecaster:
 # --------------------------------------------------------------------------------------------
 
 
+class _ClampNotice(logging.Filter):
+    """Drop the library's per-call notice about clamped quantile levels.
+
+    ``chronos_bolt`` logs it at every ``predict`` call, 365 times in a year of daily windows.
+    ``warn_untrained_levels`` says the same once per forecaster and adds the consequence.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "are not within the range of quantiles" not in record.getMessage()
+
+
+def _silence_clamp_notice() -> None:
+    """Attach :class:`_ClampNotice` to the library's logger, once."""
+    from chronos import chronos_bolt
+
+    if not any(isinstance(item, _ClampNotice) for item in chronos_bolt.logger.filters):
+        chronos_bolt.logger.addFilter(_ClampNotice())
+
+
 class ChronosBolt:
     """Chronos-Bolt (``amazon/chronos-bolt-*``) as a univariate zero-shot baseline.
 
@@ -670,6 +690,8 @@ class ChronosBolt:
             )
         self.pipeline = pipeline
         self.name = name
+        self._reported_levels: set[tuple[float, ...]] = set()
+        _silence_clamp_notice()
 
     def __repr__(self) -> str:
         return f"ChronosBolt(name={self.name!r})"
@@ -692,7 +714,9 @@ class ChronosBolt:
             prediction_length=prediction_length,
             freq=freq,
         )
-        warn_untrained_levels(levels, self.pipeline.quantiles, model_name=self.name)
+        warn_untrained_levels(
+            levels, self.pipeline.quantiles, model_name=self.name, seen=self._reported_levels
+        )
         frames = [
             self.pipeline.predict_df(
                 context[[ID_COL, TIMESTAMP_COL, name]],

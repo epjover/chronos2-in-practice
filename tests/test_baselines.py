@@ -565,10 +565,12 @@ def test_auto_ets_validates_parameters(kwargs, match):
 def test_chronos2_forecaster_warns_on_cross_learning_over_many_series(chronos2_stub):
     kwargs = {"prediction_length": 6, "quantile_levels": EVAL_QUANTILES, "freq": FREQ}
     many = make_context(n_days=3, items=[f"s{i:03d}" for i in range(101)], nan_positions=())
+    model = Chronos2Forecaster(chronos2_stub, cross_learning=True)
     with pytest.warns(UserWarning, match="depends on how the frame is cut"):
-        Chronos2Forecaster(chronos2_stub, cross_learning=True).predict(many, **kwargs)
+        model.predict(many, **kwargs)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        model.predict(many, **kwargs)  # the second window of a backtest does not repeat it
         Chronos2Forecaster(chronos2_stub, cross_learning=False).predict(many, **kwargs)
         Chronos2Forecaster(chronos2_stub, cross_learning=True).predict(make_context(), **kwargs)
 
@@ -711,11 +713,13 @@ def test_chronos_bolt_forecasts_each_target_from_its_own_column(bolt_stub):
 
 
 def test_chronos_bolt_warns_for_levels_outside_its_training_range(bolt_stub, caplog):
+    model = ChronosBolt(bolt_stub)
     with caplog.at_level(logging.WARNING, logger="c2p.models"):
-        ChronosBolt(bolt_stub).predict(
-            make_context(), prediction_length=3, quantile_levels=EVAL_QUANTILES, freq=FREQ
-        )
-    assert "levels [0.01, 0.99] are clamped" in caplog.text
+        for _ in range(3):  # three windows of a backtest: one warning
+            model.predict(
+                make_context(), prediction_length=3, quantile_levels=EVAL_QUANTILES, freq=FREQ
+            )
+    assert caplog.text.count("levels [0.01, 0.99] are clamped") == 1
 
 
 def test_chronos_bolt_rejects_pipeline_with_loading_arguments(bolt_stub, chronos2_stub):

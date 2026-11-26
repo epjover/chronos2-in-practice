@@ -23,6 +23,7 @@ from c2p.baselines import (
     MSTL,
     AutoETS,
     ChronosBolt,
+    KnownUntil,
     PublishedForecast,
     ResidualForecaster,
     SeasonalNaive,
@@ -1074,6 +1075,45 @@ def test_residual_forecaster_hands_the_base_only_the_residual():
     )
     assert seen["columns"] == [ID_COL, TIMESTAMP_COL, TARGET_COL]
     assert seen["future"] is None
+
+
+def test_known_until_hides_the_covariates_after_the_first_steps():
+    seen = {}
+
+    class Spy:
+        name = "spy"
+
+        def predict(self, context, **kwargs):
+            seen["future"] = kwargs["future_covariates"]
+            return SeasonalNaive(SEASON).predict(
+                context[[ID_COL, TIMESTAMP_COL, TARGET_COL]],
+                **{k: v for k, v in kwargs.items() if k != "future_covariates"},
+            )
+
+    context = make_context(nan_positions=()).assign(operator=1.0, kind="a")
+    context["kind"] = context["kind"].astype("category")
+    future = make_published_future(context, 6).assign(kind="a", count=3)
+    future["kind"] = future["kind"].astype("category")
+    model = KnownUntil(Spy(), 2)
+    forecast = model.predict(
+        context, prediction_length=6, quantile_levels=[0.5], freq=FREQ, future_covariates=future
+    )
+    assert model.name == "spy_known_until_2"
+    step = seen["future"].groupby(ID_COL, observed=True).cumcount()
+    for column in ("operator", "kind", "count"):
+        assert seen["future"].loc[step < 2, column].notna().all()
+        assert seen["future"].loc[step >= 2, column].isna().all()
+    assert future.notna().all().all()  # the caller's frame is left alone
+    assert len(forecast) == 6 * context[ID_COL].nunique()
+
+
+def test_known_until_needs_future_covariates_and_a_valid_step_count():
+    with pytest.raises(ValueError, match="steps must be >= 0"):
+        KnownUntil(SeasonalNaive(SEASON), -1)
+    with pytest.raises(ValueError, match="needs future_covariates"):
+        KnownUntil(SeasonalNaive(SEASON), 2).predict(
+            make_context(nan_positions=()), prediction_length=6, quantile_levels=[0.5], freq=FREQ
+        )
 
 
 @pytest.mark.parametrize(

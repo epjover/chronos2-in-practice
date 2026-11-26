@@ -804,9 +804,11 @@ def check_future_frame(
     """Raise ``ValueError`` unless ``future`` is a valid known-covariate frame for ``context``.
 
     Valid means (as ``Chronos2Pipeline.predict_df`` expects): no target column, no column
-    missing from the context, the same series ids (same values and type), exactly
+    missing from the context, the same series ids (same values and type), and exactly
     ``prediction_length`` rows per series on the grid steps right after each series' last
-    context timestamp, and no NaN.
+    context timestamp. One check is stricter than the library: no NaN. ``predict_df`` accepts
+    a NaN here and reads it as "not known at this step" (see ``c2p.baselines.KnownUntil``),
+    which is rarely what a hole in a covariate feed means, so this check asks for every step.
     """
     _require_columns(context, [id_column, timestamp_column], "The context frame")
     _require_columns(future, [id_column, timestamp_column], "The future frame")

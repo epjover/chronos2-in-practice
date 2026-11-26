@@ -620,6 +620,66 @@ class ResidualForecaster:
         )
 
 
+class KnownUntil:
+    """Let ``base`` know its future covariates only for the first ``steps`` steps of the horizon.
+
+    The known covariates of every later step are replaced by NaN before ``base`` sees them.
+    ``Chronos2Pipeline.predict_df`` reads a NaN in ``future_df`` as "not known at this step"
+    (a ``future_df`` that is NaN everywhere gives the same forecast as no ``future_df``), so
+    this is how a covariate whose own forecast is shorter than the horizon reaches the model:
+    a day-ahead weather forecast under a week-ahead horizon, a promotion calendar that stops at
+    the end of the month.
+
+    Parameters
+    ----------
+    base
+        Any ``Forecaster`` that accepts NaN in its future covariates (``Chronos2Forecaster``).
+    steps
+        Number of leading horizon steps for which the covariates stay known; 0 hides them all.
+    name
+        Model name used in results tables; defaults to ``"<base.name>_known_until_<steps>"``.
+    """
+
+    def __init__(self, base: Forecaster, steps: int, *, name: str | None = None) -> None:
+        if steps < 0:
+            raise ValueError(f"steps must be >= 0, got {steps}.")
+        self.base = base
+        self.steps = steps
+        self.name = name or f"{base.name}_known_until_{steps}"
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Forecast with the future covariates hidden after the first ``steps`` steps."""
+        if future_covariates is None:
+            raise ValueError(
+                f"{self.name} needs future_covariates: declare them in "
+                "BacktestConfig(known_covariates=...)."
+            )
+        future = future_covariates.copy()
+        step = future.groupby(ID_COL, sort=False, observed=True)[TIMESTAMP_COL].rank(method="first")
+        late = (step > self.steps).to_numpy()
+        for column in future.columns.difference([ID_COL, TIMESTAMP_COL]):
+            if pd.api.types.is_numeric_dtype(future[column]):
+                future[column] = future[column].astype("float64")
+            future.loc[late, column] = np.nan
+        return self.base.predict(
+            context,
+            prediction_length=prediction_length,
+            quantile_levels=quantile_levels,
+            freq=freq,
+            target=target,
+            future_covariates=future,
+        )
+
+
 # --------------------------------------------------------------------------------------------
 # Chronos-Bolt
 # --------------------------------------------------------------------------------------------

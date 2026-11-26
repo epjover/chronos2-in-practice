@@ -70,6 +70,7 @@ __all__ = [
     "average_runs",
     "backtest",
     "coverage_column",
+    "error_by_horizon_block",
     "error_by_series",
     "error_by_step",
     "evaluate",
@@ -896,6 +897,39 @@ def error_by_step(forecasts: pd.DataFrame) -> pd.DataFrame:
     # The step is counted before NaN actuals are dropped, so a missing hour keeps its number.
     steps = forecasts.groupby(keys, sort=False)[TIMESTAMP_COL].rank(method="first").astype(int)
     return _pooled_errors(forecasts.assign(**{STEP_COL: steps}), STEP_COL)
+
+
+def error_by_horizon_block(forecasts: pd.DataFrame, edges: Sequence[int]) -> pd.DataFrame:
+    """Error of each model on each window, separately for blocks of horizon steps.
+
+    ``edges`` are the last steps of the blocks, in increasing order: ``(12, 24)`` scores steps
+    1 to 12 and steps 13 to 24 apart. Within a (model, window, block) every series and step is
+    pooled, with ``WAPE`` and ``WQL`` defined as in :func:`error_by_step`. The result has the
+    columns :func:`skill_table` needs, so one block can be compared across models with the
+    same intervals as a whole window. Steps beyond the last edge are left out.
+
+    Returns one row per (model, window, block): ``model``, ``window``, ``block`` (``"1-12"``),
+    ``WAPE``, ``WQL``, ``n``.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    keys = [MODEL_COL, WINDOW_COL, ID_COL, TARGET_NAME_COL]
+    _check_columns(forecasts, [*keys, TIMESTAMP_COL], "forecasts")
+    edges = [int(edge) for edge in edges]
+    if not edges or edges[0] < 1 or any(b <= a for a, b in pairwise(edges)):
+        raise ValueError(f"edges must be increasing step numbers >= 1, got {edges}.")
+    forecasts = forecasts.reset_index(drop=True)
+    steps = forecasts.groupby(keys, sort=False)[TIMESTAMP_COL].rank(method="first").astype(int)
+    starts = [1, *(edge + 1 for edge in edges[:-1])]
+    labels = [f"{start}-{edge}" for start, edge in zip(starts, edges, strict=True)]
+    block = pd.cut(steps, bins=[0, *edges], labels=labels)
+    kept = forecasts.loc[block.notna()].copy()
+    # One pooled error per (window, block): the pair is packed into a single grouping key.
+    kept["_cell"] = kept[WINDOW_COL].astype(str) + "|" + block[block.notna()].astype(str)
+    table = _pooled_errors(kept, "_cell")
+    cell = table.pop("_cell").str.split("|", n=1, expand=True)
+    table.insert(1, WINDOW_COL, cell[0].astype(forecasts[WINDOW_COL].dtype))
+    table.insert(2, "block", pd.Categorical(cell[1], categories=labels, ordered=True))
+    return table.sort_values([MODEL_COL, WINDOW_COL, "block"], ignore_index=True)
 
 
 def error_by_series(forecasts: pd.DataFrame) -> pd.DataFrame:

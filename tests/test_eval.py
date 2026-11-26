@@ -27,6 +27,7 @@ from c2p.eval import (
     Window,
     average_runs,
     backtest,
+    error_by_horizon_block,
     error_by_series,
     error_by_step,
     evaluate,
@@ -1327,6 +1328,26 @@ def test_error_by_step_matches_the_definitions() -> None:
     # A point forecast repeated at every level: pinball loss averages to |error| / 2.
     assert table.loc[1, "WQL"] == pytest.approx(2.0 / 10.0)
     assert table.loc[2, "WQL"] == 0.0
+
+
+def test_error_by_horizon_block_pools_steps_within_each_window() -> None:
+    actual = np.array([10.0, 20.0, 30.0, 40.0])
+    quantiles = {level: np.array([12.0, 20.0, 30.0, 44.0]) for level in SCORED_QUANTILES}
+    frames = [scored_frame(actual, quantiles, "m"), scored_frame(actual * 2, quantiles, "m")]
+    frames[1][WINDOW_COL] = 1
+    table = error_by_horizon_block(pd.concat(frames), edges=(2, 4))
+    assert table.columns.tolist() == [MODEL_COL, WINDOW_COL, "block", "WAPE", "WQL", "n"]
+    assert table["block"].astype(str).tolist() == ["1-2", "3-4", "1-2", "3-4"]
+    assert table[WINDOW_COL].tolist() == [0, 0, 1, 1]
+    first = table.set_index([WINDOW_COL, "block"])
+    assert first.loc[(0, "1-2"), "WAPE"] == pytest.approx(2.0 / 30.0)
+    assert first.loc[(0, "3-4"), "WAPE"] == pytest.approx(4.0 / 70.0)
+    assert first.loc[(0, "3-4"), "WQL"] == pytest.approx(4.0 / 70.0)  # a point forecast
+    assert (table["n"] == 2).all()
+    # Steps past the last edge are left out, and the edges must make sense.
+    assert error_by_horizon_block(pd.concat(frames), edges=(3,))["n"].tolist() == [3, 3]
+    with pytest.raises(ValueError, match="edges must be increasing"):
+        error_by_horizon_block(pd.concat(frames), edges=(2, 2))
 
 
 def test_error_by_series_gives_one_row_per_model_and_series() -> None:

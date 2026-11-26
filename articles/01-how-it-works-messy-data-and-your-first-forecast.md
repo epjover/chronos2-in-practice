@@ -174,7 +174,9 @@ call away, scores 38.9 on fev-bench against 47.3. Part 2 uses it as a free basel
 higher fev-bench skill scores than Chronos-2's 47.3: Mistral's Timestral-209M at 50.4 (October
 2026, under a modified MIT licence), The Forecasting Company's t0-gamma at 49.4 (13 October 2026,
 Apache-2.0) and Google's TimesFM-3 at 49.0 (released 31 August 2026, under a non-commercial
-licence). Those figures come from the vendors' own model cards [12], so check the leaderboards [8],
+licence). The first two figures come from each vendor's own model card; the TimesFM-3 figure is
+the one Mistral's card reports in its comparison table, because Google's card quotes no fev-bench
+score [12]. So check the leaderboards [8],
 [fev-bench](https://huggingface.co/spaces/autogluon/fev-bench) and
 [GIFT-Eval](https://huggingface.co/spaces/Salesforce/GIFT-Eval) before you quote a ranking, and date
 whatever snapshot you cite. Even so, Chronos-2 remains a defensible default for reasons a ranking
@@ -494,10 +496,11 @@ alone or in a group with its neighbours.
     https://towardsdatascience.com/five-questions-about-chronos-2-the-time-series-foundation-model/
     and https://towardsdatascience.com/five-ways-to-fine-tune-chronos-2-the-time-series-foundation-model/
 
-12. Model cards with the fev-bench scores quoted in section 2: `mistralai/Timestral-209M`,
-    https://huggingface.co/mistralai/Timestral-209M, `theforecastingcompany/t0-gamma`,
-    https://huggingface.co/theforecastingcompany/t0-gamma, and `google/timesfm-3.0-pytorch`,
-    https://huggingface.co/google/timesfm-3.0-pytorch
+12. Model cards for section 2. With fev-bench scores: `mistralai/Timestral-209M`,
+    https://huggingface.co/mistralai/Timestral-209M (its comparison table is also the source of
+    the TimesFM-3 figure), and `theforecastingcompany/t0-gamma`,
+    https://huggingface.co/theforecastingcompany/t0-gamma. For the release and the licence of
+    TimesFM-3: `google/timesfm-3.0-pytorch`, https://huggingface.co/google/timesfm-3.0-pytorch
 13. Auer, A., Podest, P., Klotz, D., *et al.* (2025). *TiRex: Zero-Shot Forecasting Across Long and
     Short Horizons with Enhanced In-Context Learning*. arXiv:2505.23719.
     https://arxiv.org/abs/2505.23719

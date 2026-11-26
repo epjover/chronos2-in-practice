@@ -198,8 +198,8 @@ Look at the cost table again: in every run the best validation loss is at step 1
 library's defaults stop while the loss is still falling, so whether more training helps is an open
 question, and the test year is not the place to answer it.
 
-Four budgets, rank 8, one seed: the default, four times the steps, ten times the learning rate, and
-both. Each is scored on the **validation backtest** (the 184 day-ahead windows of the second half of
+The candidates are rank 8 with one seed: the default budget, four times the steps, ten times the
+learning rate, and both. Each is scored on the **validation backtest** (the 184 day-ahead windows of the second half of
 2017, against the zero-shot model on those windows). The test scores are computed in the same pass
 and shown beside them, but the choice reads only the validation column
 ([`07_budget_validation.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/07_budget_validation.csv),
@@ -220,7 +220,7 @@ the training data end, the test year starts six months later, and the configurat
 for doing well on the first. A gain measured on the period that chose it is an upper bound, and
 this is by how much.
 
-**Three seeds of the chosen budget, on the test year**
+**The chosen budget with three seeds, on the test year**
 ([`07_tuned_summary.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/07_tuned_summary.csv)): +8.0% [+2.3, +13.3], with single runs
 between +8.3% and +9.8%. The average sits just below every single run because it is taken window
 by window: each run has its own bad days. The mean WQL falls by 12.9%, more than the skill, which

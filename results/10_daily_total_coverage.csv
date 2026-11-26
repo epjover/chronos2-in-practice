@@ -1,0 +1,7 @@
+model,nominal,achieved
+"hourly quantiles, summed",0.8,0.790633608815427
+"hourly quantiles, independent hours",0.8,0.30303030303030304
+"daily series, forecast directly",0.8,0.8044077134986226
+"hourly quantiles, summed",0.98,0.9476584022038568
+"hourly quantiles, independent hours",0.98,0.6336088154269972
+"daily series, forecast directly",0.98,0.9807162534435262

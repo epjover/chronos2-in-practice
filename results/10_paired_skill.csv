@@ -1,0 +1,6 @@
+model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length,comparison
+"hourly quantiles, summed","daily series, forecast directly",WQL,0.34263592402535337,0.2808828107318198,0.3990103809589702,0.7245179063360881,363,7,tomorrow's total
+"daily series, forecast directly","hourly quantiles, summed",WQL,0.08244332029310819,0.00039521871155974404,0.1546100799267366,0.6444444444444445,45,1,a week of totals
++known covariates,history only,WQL,0.42975277545335444,0.4260824882409287,0.43353112851759784,1.0,1115,1,panel
++known and past covariates,+known covariates,WQL,-0.009201303637970337,-0.0098893435512331,-0.00851785097168804,0.16502242152466368,1115,1,panel
+"+known covariates, cross-learning",+known covariates,WQL,-0.02116953843023217,-0.024737710477126133,-0.017860147641861612,0.35515695067264574,1115,1,panel

@@ -790,6 +790,39 @@ def test_chronos2_forecaster_real_model(chronos2_pipeline):
 
 
 @pytest.mark.slow
+def test_tensor_api_returns_the_numbers_of_predict_df(chronos2_pipeline):
+    """Part 5 shows ``predict_quantiles`` on arrays as the route without pandas."""
+    context, future, _ = make_covariate_context(n=24 * 21, horizon=SEASON)
+    levels = [0.1, 0.5, 0.9]
+    frame = chronos2_pipeline.predict_df(
+        context[[ID_COL, TIMESTAMP_COL, TARGET_COL, "driver"]],
+        future_df=future,
+        id_column=ID_COL,
+        timestamp_column=TIMESTAMP_COL,
+        target=TARGET_COL,
+        prediction_length=SEASON,
+        quantile_levels=levels,
+    )
+    quantiles, _ = chronos2_pipeline.predict_quantiles(
+        [
+            {
+                "target": context[TARGET_COL].to_numpy(),
+                "past_covariates": {"driver": context["driver"].to_numpy()},
+                "future_covariates": {"driver": future["driver"].to_numpy()},
+            }
+        ],
+        prediction_length=SEASON,
+        quantile_levels=levels,
+    )
+    assert tuple(quantiles[0].shape) == (1, SEASON, len(levels))
+    np.testing.assert_allclose(
+        quantiles[0][0].float().cpu().numpy(),
+        frame[[quantile_col(level) for level in levels]].to_numpy(),
+        rtol=1e-5,
+    )
+
+
+@pytest.mark.slow
 def test_chronos2_forecaster_uses_future_covariates(chronos2_pipeline):
     context, future, actuals = make_covariate_context(n=24 * 21, horizon=SEASON)
     forecaster = Chronos2Forecaster(chronos2_pipeline)

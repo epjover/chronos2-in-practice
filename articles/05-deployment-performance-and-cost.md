@@ -165,6 +165,30 @@ From eight series on, half precision is 1.6 to 2.0 times faster, and the memory 
 falls from 469 MB to 240 MB. This was measured on the GPU only; the CPU rows above, the service
 of section 2 and the costs of section 3 all use `float32`.
 
+**The same call without pandas.** Every number in this series goes through `predict_df`, which
+takes and returns data frames. A service that already holds arrays can call the model on them
+directly:
+
+```python
+quantiles, mean = pipeline.predict_quantiles(
+    [
+        {
+            "target": y,  # 1-D array, the history
+            "past_covariates": {"load_forecast": x},
+            "future_covariates": {"load_forecast": x_future},  # 24 known values
+        }
+    ],
+    prediction_length=24,
+    quantile_levels=[0.1, 0.5, 0.9],
+)
+quantiles[0].shape  # (1, 24, 3): variates, steps, levels
+```
+
+One dict per series; a covariate whose future is known appears in both inner dicts. There are
+no timestamps on this route, so the regular grid of Part 1 is yours to guarantee. A test in the
+repository checks that both routes return the same numbers; this series did not time the
+difference.
+
 **Single-request latency is good enough everywhere.** One series, 2,048 hours of context, 24-step
 horizon, runs in 27 ms on the GPU (30 ms at the 95th percentile) and 109 ms on 8 CPU cores (154 ms
 at the 95th). Either is fine for an interactive dashboard. Latency is almost never why you'd buy a

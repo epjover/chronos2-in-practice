@@ -535,6 +535,185 @@ def article_6(r: Results) -> Iterator[str]:
     )
 
 
+def _plain_interval(row: pd.Series) -> str:
+    """``34.3% [28.1, 39.9]``: a skill-table row without the signs."""
+    return f"{pct(row['skill'])}% [{pct(row['ci_low'])}, {pct(row['ci_high'])}]"
+
+
+def article_7(r: Results) -> Iterator[str]:
+    """Totals, the daily frequency, the panel of stores, the embeddings and the one-page table."""
+    total = r("10_daily_total_summary").set_index("model")
+    labels = {
+        "hourly quantiles, summed": "hourly forecast, quantiles summed",
+        "hourly quantiles, independent hours": "hourly forecast, hours taken as unrelated",
+        "daily series, forecast directly": "daily series, forecast directly",
+        "seasonal_naive": "seasonal naive (the same weekday last week)",
+    }
+    for key, label in labels.items():
+        row = total.loc[key]
+        yield table_row(
+            label,
+            f"{pct(row['WAPE'], 2)}%",
+            half_up(row["WQL"], 4),
+            f"{pct(row['coverage_80'])}%",
+            f"{pct(row['coverage_98'])}%",
+        )
+    operator = total.loc["operator forecast, summed"]
+    yield table_row(
+        "the operator's hourly forecast, summed",
+        f"{pct(operator['WAPE'], 2)}%",
+        half_up(operator["WQL"], 4),
+        "n/a",
+        "n/a",
+    )
+    paired = r("10_paired_skill").set_index(["comparison", "model"])
+    summed = paired.loc[("tomorrow's total", "hourly quantiles, summed")]
+    yield f"a WQL {_plain_interval(summed)} lower"
+    calibrated = r("10_total_calibration_summary").set_index("model")
+    labels = {
+        "hourly quantiles, summed": "hourly quantiles summed, as they come",
+        "calibrated hours, summed": "hours calibrated, then summed",
+        "summed, then calibrated": "summed, then calibrated as a daily series",
+    }
+    for key, label in labels.items():
+        row = calibrated.loc[key]
+        yield table_row(
+            label,
+            half_up(row["WQL"], 4),
+            f"{pct(row['coverage_80'])}%",
+            f"{pct(row['coverage_98'])}%",
+        )
+    week = r("10_week_ahead_summary").set_index("model")
+    labels = {
+        "daily series, forecast directly": "daily series, forecast directly",
+        "hourly quantiles, summed": "hourly forecast (168 steps), quantiles summed",
+        "mstl": "MSTL on the daily series",
+    }
+    for key, label in labels.items():
+        row = week.loc[key]
+        yield table_row(
+            label,
+            half_up(row["WQL"], 4),
+            f"{pct(row['WAPE'], 2)}%",
+            f"{pct(row['coverage_80'])}%",
+            f"{pct(row['skill'])}% [{pct(row['ci_low'])}, {pct(row['ci_high'])}]",
+        )
+    naive = week.loc["seasonal_naive"]
+    yield table_row(
+        "seasonal naive (the same weekday last week)",
+        half_up(naive["WQL"], 4),
+        f"{pct(naive['WAPE'], 2)}%",
+        f"{pct(naive['coverage_80'])}%",
+        "n/a",
+    )
+    direct = paired.loc[("a week of totals", "daily series, forecast directly")]
+    yield f"ahead by {interval(direct)}"
+    panel = r("10_panel_summary").set_index("model")
+    labels = {
+        "history only": "history only",
+        "+known covariates": "+ known covariates",
+        "+known and past covariates": "+ known and past covariates",
+        "+known covariates, cross-learning": "+ known covariates, cross-learning",
+    }
+    for key, label in labels.items():
+        row = panel.loc[key]
+        yield table_row(
+            label,
+            half_up(row["WQL"], 4),
+            f"{pct(row['coverage_80'])}%",
+            _plain_interval(row.filter(like="window_").rename(lambda name: name[7:])),
+            f"{pct(row['store_skill'])}% [{pct(row['store_ci_low'])}, {pct(row['store_ci_high'])}]",
+        )
+    naive = panel.loc["seasonal_naive"]
+    yield table_row(
+        "seasonal naive (the same weekday last week)",
+        half_up(naive["WQL"], 4),
+        f"{pct(naive['coverage_80'])}%",
+        "n/a",
+        "n/a",
+    )
+    stores = paired.loc["panel"]
+    known, past, cross = (
+        stores.loc[name]
+        for name in (
+            "+known covariates",
+            "+known and past covariates",
+            "+known covariates, cross-learning",
+        )
+    )
+    yield f"lower by {_plain_interval(known)}, and it is lower on {pct(known['win_rate'], 0)}% of"
+    speed = panel["stores_per_second"]
+    yield (
+        f"forecast {half_up(speed['history only'], 0)} stores per second and the arm with five "
+        f"known covariates {half_up(speed['+known covariates'], 0)}"
+    )
+    yield f"({interval(past)}, better on {pct(past['win_rate'], 0)}% of the stores)"
+    yield f"({interval(cross)}, better on {pct(cross['win_rate'], 0)}% of the stores)"
+    probes = r("11_probe_accuracy").pivot_table(
+        index="representation", columns="task", values="accuracy", sort=False
+    )
+    names = {
+        "raw window": "raw window (control)",
+        "embedding (mean)": "embedding, mean of the patches",
+        "embedding (reg)": "embedding, [REG] token",
+        "embedding (forecast)": "embedding, future-patch token",
+    }
+    for key, label in names.items():
+        yield table_row(
+            label,
+            f"{pct(probes.loc[key, 'weekday of the next day'])}%",
+            f"{pct(probes.loc[key, 'month of the next day'])}%",
+        )
+    floor = r("11_probe_accuracy").groupby("task", sort=False)["majority_class"].first()
+    yield (
+        f"{pct(floor['weekday of the next day'])}% for the weekday and "
+        f"{pct(floor['month of the next day'])}% for the month"
+    )
+    analog = r("11_analog_forecast").set_index("forecast")
+    yield table_row(
+        "yesterday repeated", f"{pct(analog.loc['yesterday repeated', 'WAPE'], 2)}%", "n/a"
+    )
+    yield table_row(
+        "analogs by raw window (control)",
+        f"{pct(analog.loc['analogs: raw window', 'WAPE'], 2)}%",
+        "n/a",
+    )
+    for key, label in list(names.items())[1:]:
+        row = analog.loc[f"analogs: {key}"]
+        gap = (
+            f"{spct(row['vs_raw_window'], 2)} [{spct(row['vs_raw_ci_low'], 2)}, "
+            f"{spct(row['vs_raw_ci_high'], 2)}]"
+        )
+        yield table_row(f"analogs by {label}", f"{pct(row['WAPE'], 2)}%", gap)
+    auc = r("11_anomaly_auc").pivot_table(
+        index="anomaly", columns="representation", values="auc", sort=False
+    )
+    counts = r("11_anomaly_auc").groupby("anomaly", sort=False)["n_anomalies"].first()
+    for anomaly, row in auc.iterrows():
+        yield table_row(str(anomaly), *(half_up(row[key], 2) for key in names))
+    yield f"the {int(counts['holiday on a working day'])} windows that end on a public holiday"
+    neighbors = r("11_series_neighbors").set_index("series")["cosine"]
+    yield (
+        f"(cosine {half_up(neighbors['wind_onshore_forecast_tso'], 3)}), "
+        f"the load forecast the load "
+        f"({half_up(neighbors['load_forecast_tso'], 3)}), the solar forecast the solar generation "
+        f"({half_up(neighbors['solar_forecast_tso'], 3)})"
+    )
+    for _, row in r("12_series_summary").iterrows():
+        yield table_row(row["lever"], row["effect"], row["measured_as"], row["part"])
+    backtest = r("02_backtest_metrics")
+    wape = backtest.loc[backtest["model"] == "chronos-2", "WAPE"].mean()
+    best = analog.loc["analogs: embedding (forecast)", "WAPE"]
+    yield f"WAPE of {pct(wape)}%, and five analog days reach {pct(best, 2)}%"
+    joint = r("04_multivariate_skill").set_index("target")
+    ladder = r("05_price_ladder_skill").set_index("model")
+    weekday = r("05_categorical_skill").set_index("model")
+    yield f"({interval(joint.loc['load_actual'])})"
+    yield f"({interval(ladder.loc['+calendar'])})"
+    yield f"({interval(weekday.loc['+weekday as a category'])})"
+    yield f"({interval(_skill_row(backtest, 'chronos-2', 'chronos-bolt'))})"
+
+
 EXPECTED: dict[str, Callable[[Results], Iterator[str]]] = {
     "01": article_1,
     "02": article_2,
@@ -542,6 +721,7 @@ EXPECTED: dict[str, Callable[[Results], Iterator[str]]] = {
     "04": article_4,
     "05": article_5,
     "06": article_6,
+    "07": article_7,
 }
 
 # --- Checks ---------------------------------------------------------------------------------

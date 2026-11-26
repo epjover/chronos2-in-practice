@@ -401,39 +401,47 @@ what you should keep; the ladder is what answers the second question.
 
 The same machinery applies to the target's own history. Hertel et al. (2026) cut the context into
 four segments, the last day, the rest of the week, the rest of four weeks and everything older, and
-treat each one as a player that a coalition can switch off.
+treat each one as a player that a coalition can switch off. The windows are the same 365, and the
+intervals resample them in the same weekly blocks.
 
 ![Figure 4: results/figures/06_context_shapley.png](../results/figures/06_context_shapley.png)
 
-*Figure 4. Shapley values of four context segments, same twelve windows.*
+*Figure 4. Shapley values of four context segments over the 365 windows, with 95% block-bootstrap
+intervals.*
 
-| Segment | Shapley value |
+| Segment | Shapley value [95% CI] |
 | --- | --- |
-| lags 25–168 (rest of the week) | **0.0305** |
-| lags 169–672 (rest of four weeks) | 0.0219 |
-| lags 1–24 (the last day) | 0.0193 |
-| lags 673+ (older) | 0.0186 |
+| lags 1–24 (the last day) | +0.0432 [+0.0309, +0.0594] |
+| lags 25–168 (rest of the week) | +0.0290 [+0.0225, +0.0367] |
+| lags 169–672 (rest of four weeks) | +0.0233 [+0.0195, +0.0276] |
+| lags 673+ (older) | +0.0129 [+0.0087, +0.0176] |
+| the whole context | +0.1084 [+0.0875, +0.1365] |
 
+**The price's own history outweighs the covariates by more than an order of magnitude.** The whole
+context removes 0.1084 of WQL; the four covariate players of section 7 remove 0.0032 between them.
+The ratio is 34, with an interval from 15 to 178 that is this wide because its denominator sits
+close to zero. For all the attention covariates get, including in this article, the series itself
+remains the dominant input.
 
+**Recent history carries most of it, and old history carries little per hour.** The last day alone
+holds 40% of the total. The hours older than four weeks are two thirds of the 2,048-hour context
+and hold 12%. That is Part 2's context curve seen from the inside: the skill stopped growing
+after about a thousand hours because the hours added beyond that point are these.
 
-**The price's own history matters about twenty-five times as much as the covariates.** Look at the
-scales involved. The four context segments contribute 0.019 to 0.031 each and 0.090 between them,
-while the four covariate players add up to 0.0035. Section 3's ladder put covariates at 8 to 12%, and this shows what
-accounts for the other 90%. For all the attention covariates get, including in this article, the
-series itself remains the dominant input.
-
-**Occlusion and Shapley point at different days, and there's a reason behind it.** Sliding a
-one-day NaN window back through the context, the single most damaging position by a factor of ten
-is the most recent day (lag 1: 0.00998, while every other position stays at or below 0.00088). Yet
-the Shapley value for that same last day is only the *third* largest. Both results are correct,
-because occlusion hides one day while all the others stay present, so it measures a marginal
-contribution at full coalition, whereas Shapley averages over coalitions where the rest of the
-week is also missing. The last day is the most useful day to have, but also the
-easiest one to replace, since the rest of the week can stand in for it.
+**Occlusion agrees about the last day and disagrees about everything else.** Slide a one-day gap
+back through the last four weeks, one day at a time. Hiding the most recent day costs
+0.0209 [0.0121, 0.0325] of WQL, and no other single day costs more than 0.0009. Read on its own,
+that says only yesterday matters. The Shapley values say that the three older segments hold 60% of
+the total. Both are right, and the difference is redundancy. Occlusion hides one day while the 27
+others stay in place, and the neighbours of a hidden Tuesday stand in for it; a Shapley value also
+averages over coalitions in which the neighbours are missing. Information that exists in several
+copies looks worthless to occlusion, which is the reason not to read an occlusion curve as a
+ranking of what the model needs.
 
 ![Figure 5: results/figures/06_occlusion.png](../results/figures/06_occlusion.png)
 
-*Figure 5. Occlusion: the WQL cost of hiding one day of history, by how far back it sits.*
+*Figure 5. Occlusion: the WQL cost of hiding one day of history, by how many days before the
+cutoff it sits, with 95% block-bootstrap intervals over the 365 windows.*
 
 ## 9. What-if: move a covariate and watch
 

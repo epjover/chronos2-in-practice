@@ -320,15 +320,37 @@ def article_3(r: Results) -> Iterator[str]:
         yield table_row(player, *cells)
     yield table_row("all four together", "n/a", "n/a", _attribution(shapley.loc["all four"]))
     segments = {
+        "lags 1-24": "lags 1–24 (the last day)",
         "lags 25-168": "lags 25–168 (rest of the week)",
         "lags 169-672": "lags 169–672 (rest of four weeks)",
-        "lags 1-24": "lags 1–24 (the last day)",
         "lags 673+": "lags 673+ (older)",
     }
     context = r("06_context_shapley_summary").set_index("player")
     for key, label in segments.items():
         yield table_row(label, _attribution(context.loc[key]))
     yield table_row("the whole context", _attribution(context.loc["whole context"]))
+    scales = r("06_context_vs_covariates").iloc[0]
+    yield (
+        f"context removes {half_up(scales['context_wql_removed'], 4)} of WQL; the four "
+        f"covariate players of section 7 remove "
+        f"{half_up(scales['covariates_wql_removed'], 4)} between them"
+    )
+    yield (
+        f"The ratio is {half_up(scales['ratio'], 0)}, with an interval from "
+        f"{half_up(scales['ratio_ci_low'], 0)} to {half_up(scales['ratio_ci_high'], 0)}"
+    )
+    whole = context.loc["whole context", "mean"]
+    older = context.loc[["lags 25-168", "lags 169-672", "lags 673+"], "mean"].sum()
+    yield f"holds {pct(context.loc['lags 1-24', 'mean'] / whole, 0)}% of the total"
+    yield f"and hold {pct(context.loc['lags 673+', 'mean'] / whole, 0)}%"
+    yield f"the three older segments hold {pct(older / whole, 0)}% of"
+    hidden = r("06_occlusion_summary").set_index("first_lag")
+    last, rest = hidden.loc[1], hidden.drop(index=1)["mean"].max()
+    yield (
+        f"{half_up(last['mean'], 4)} [{half_up(last['ci_low'], 4)}, "
+        f"{half_up(last['ci_high'], 4)}] of WQL, and no other single day costs more than "
+        f"{half_up(rest, 4)}"
+    )
     price = r("06_what_if").groupby("wind_factor")["predictions"].mean()
     yield f"| Operator's forecast | {half_up(price[1.0], 2)} EUR/MWh |"
     yield f"| Wind × 1.5 | {half_up(price[1.5], 2)} ({signed(price[1.5] - price[1.0], 2)}) |"

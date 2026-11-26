@@ -1,0 +1,16 @@
+part,lever,effect,measured_as
+Part 1,"Missing hours left as NaN on the regular grid, not dropped","WQL +104% if dropped, +2% as NaN","WQL against the clean series, Spanish load, 40 windows"
+Part 2,"Zero-shot, nothing tuned","+63.9% [+57.5, +69.1]","WQL against the seasonal naive, Spanish load"
+Part 2,"Context 64 → 2,048 hours",25.1% → 65.4%,"skill over the seasonal naive, Spanish load"
+Part 3,Covariates the market knows in advance,"+49.5% [+37.0, +59.4]","WQL against no covariates, EPF-DE price"
+Part 3,The operator's forecasts as covariates,"+10.9% [+6.2, +15.1]","WQL against no covariates, Spanish price"
+Part 3,Forecasting the operator's error instead of the load,"+21.4% [+19.4, +23.3]","WQL against the operator's forecast, Spanish load"
+Part 4,"LoRA rank 8, library defaults","+2.3% [−0.2, +4.6]","WQL against zero-shot, Spanish load"
+Part 4,"Full fine-tune, 119M weights","+1.7% [−2.7, +5.6]","WQL against zero-shot, Spanish load"
+Part 5,A GPU instead of 8 CPU cores,16.5× the throughput,"series per second, same model and context"
+Part 5,`chronos-2-small` instead of `chronos-2`,"3.3× the throughput, −24.8% [−31.5, −18.7]","WQL against the base model, Spanish load"
+Part 6,"Conformal correction, learned once",73.4% → 83.2%,coverage of the 80% interval over the year
+Part 6,"Conformal correction, updated with every forecast",56.1% → 74.0%,coverage of the 80% interval in the worst month
+Part 7,Summing the hourly forecast instead of forecasting the daily total,"+34.3% [+28.1, +39.9]",WQL of tomorrow's total against the daily series
+Part 7,"Promotions and holidays known in advance, 1,115 stores","+43.0% [+42.6, +43.4]","WQL against history only, stores as units"
+Part 7,Embeddings instead of raw values to flag a frozen feed,AUC 0.62 → 0.95,"last 12 hours repeated, 365 windows"

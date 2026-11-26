@@ -578,7 +578,7 @@ def decision_stages(measured: Mapping[str, str]) -> list[Stage]:
             "finetune",
             "Fine-tune last, with a validation period and several seeds",
             "LoRA first. Choose the budget on a validation backtest, not on the training loss, "
-            "and repeat the run: one seed can sit on either side of zero.",
+            "and repeat the run with other seeds before you believe a gain of a few percent.",
         ),
         (
             "calibration",

@@ -200,3 +200,51 @@ def test_cheaper_variants_compares_against_the_full_model(project, monkeypatch):
     skill = pd.read_csv(project.results / "fast" / "bench_variants_skill.csv").set_index("model")
     assert skill.loc["chronos-2-small", "skill"] == pytest.approx(0.0)  # same stand-in model
     assert skill.loc["chronos-2-small", "block_length"] == 7
+
+
+SUMMARY_INPUTS = (
+    "00_messy_data_summary",
+    "02_skill_table",
+    "03_context_sweep",
+    "05_epf_de_skill",
+    "05_price_ladder_skill",
+    "05_operator_skill",
+    "08_comparison_skill",
+    "bench_latency_cuda",
+    "bench_latency_cpu",
+    "bench_variants_skill",
+    "09_cost_per_million",
+    "09_conformal_summary",
+    "09_conformal_by_month",
+    "09_monitoring_rolling",
+    "10_paired_skill",
+    "11_anomaly_auc",
+)
+
+
+def test_series_summary_builds_the_page_and_the_path_from_the_committed_results(project):
+    copy_results(project, *SUMMARY_INPUTS)
+    script = load_script("scripts/series_summary.py")
+    assert script.main([]) == 0
+    table = pd.read_csv(project.results / "12_series_summary.csv")
+    assert list(table.columns) == script.SUMMARY_COLUMNS
+    assert set(table["part"]) == {f"Part {n}" for n in range(1, 8)}
+    assert table.notna().all().all() and not table["effect"].str.contains("nan").any()
+    path = pd.read_csv(project.results / "12_decision_path.csv")
+    assert len(path) == 8 and path["measured"].str.len().min() > 20
+    assert (project.figures / "12_decision_path.png").is_file()
+
+
+def test_series_summary_names_the_missing_results_file(project):
+    copy_results(project, *SUMMARY_INPUTS[1:])
+    script = load_script("scripts/series_summary.py")
+    with pytest.raises(FileNotFoundError, match="00_messy_data_summary"):
+        script.main([])
+
+
+def test_series_summary_rounds_half_up_with_a_true_minus():
+    script = load_script("scripts/series_summary.py")
+    assert script.half_up(0.25, 1) == "0.3" and script.pct(0.6386) == "63.9%"
+    assert script.signed(-0.0025) == "\u22120.3" and script.signed(0.018) == "+1.8"
+    row = pd.Series({"skill": 0.109, "ci_low": 0.062, "ci_high": 0.151})
+    assert script.interval(row) == "+10.9% [+6.2, +15.1]"

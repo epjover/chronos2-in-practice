@@ -385,6 +385,10 @@ def article_4(r: Results) -> Iterator[str]:
             f"| {run} | {half_up(a['WQL'], 4)} | {half_up(a['MASE'], 3)} | {interval(k)} "
             f"| {pct(k['win_rate'], 0)}% |"
         )
+    sweep = r("03_context_sweep")
+    by_context = sweep[sweep["horizon"] == 24].set_index("context")["skill"]
+    gain = 100 * (by_context[2048] - by_context[64])
+    yield f"| Context 64 → 2,048 hours (Part 2) | +{half_up(gain, 0)} points |"
     yield f"| LoRA rank 8 | {spct(skill.loc['lora_r8', 'skill'])}% |"
     yield f"| LoRA rank 4 | {spct(skill.loc['lora_r4', 'skill'])}% |"
     yield f"| Full fine-tune, 119M weights | {spct(full_skill.loc['full', 'skill'])}% |"

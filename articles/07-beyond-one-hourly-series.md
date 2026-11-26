@@ -463,7 +463,7 @@ dependence between days. It was written down so that the model it describes can 
    probes*. arXiv:1610.01644. https://arxiv.org/abs/1610.01644
 8. Lorenz, E. N. (1969). *Atmospheric Predictability as Revealed by Naturally Occurring
    Analogues*. Journal of the Atmospheric Sciences 26(4), 636–646.
-   https://doi.org/10.1175/1520-0469(1969)26<636:APARBN>2.0.CO;2
+   https://doi.org/10.1175/1520-0469%281969%2926%3C636%3AAPARBN%3E2.0.CO%3B2
 9. Romano, Y., Patterson, E. & Candès, E. J. (2019). *Conformalized Quantile Regression*.
    NeurIPS 2019. arXiv:1905.03222. https://arxiv.org/abs/1905.03222
 

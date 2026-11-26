@@ -132,6 +132,33 @@ is that `chronos-2-small` is the right checkpoint when throughput is the binding
 quarter more error is affordable (a CPU-only serverless endpoint is the obvious case), and the wrong
 one when the forecast's quality is what you are paid for.
 
+**Half precision is the cheaper variant that costs nothing measurable.** The middle row of that
+table is the same checkpoint with its weights loaded as 16-bit floats, which is one argument:
+
+```python
+import torch
+from chronos import Chronos2Pipeline
+
+pipeline = Chronos2Pipeline.from_pretrained(
+    "amazon/chronos-2", device_map="cuda", dtype=torch.bfloat16
+)  # c2p: load_chronos2(device="cuda", dtype="bfloat16")
+```
+
+On the 365 windows its typical window is 0.1% worse than the 32-bit model's, with an interval of
+a tenth of a point either way, and the mean WQL and the coverage differ in the last printed digit.
+The throughput at 2,048 hours of context
+([`bench_latency_cuda_bf16.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/bench_latency_cuda_bf16.csv), same card, same
+protocol):
+
+![Table 3: articles/medium/tables/05_table_3.png](tables/05_table_3.png)
+
+*Table 3. Columns: Precision, 1 series, 8, 32, 128, Peak VRAM at 128.*
+
+A single series takes the same 26 to 27 ms either way, because one series does not fill the card.
+From eight series on, half precision is 1.6 to 2.0 times faster, and the memory for one series
+falls from 469 MB to 240 MB. This was measured on the GPU only; the CPU rows above, the service
+of section 2 and the costs of section 3 all use `float32`.
+
 **Single-request latency is good enough everywhere.** One series, 2,048 hours of context, 24-step
 horizon, runs in 27 ms on the GPU (30 ms at the 95th percentile) and 109 ms on 8 CPU cores (154 ms
 at the 95th). Either is fine for an interactive dashboard. Latency is almost never why you'd buy a
@@ -160,9 +187,9 @@ uv run --group deploy python deploy/fastapi/smoke_test.py --wait 300 \
 Measured against the running service using 8 CPU cores, a week of hourly context, and a 24-step
 horizon:
 
-![Table 3: articles/medium/tables/05_table_3.png](tables/05_table_3.png)
+![Table 4: articles/medium/tables/05_table_4.png](tables/05_table_4.png)
 
-*Table 3. Columns: Series per request, Client p50, Client p95, Server p50.*
+*Table 4. Columns: Series per request, Client p50, Client p95, Server p50.*
 
 (Source: [`results/09_service_latency.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/09_service_latency.csv), written by
 `smoke_test.py --csv`.) The HTTP layer adds 2 to 27 ms on top of the model, which is negligible, but it helps to
@@ -273,9 +300,9 @@ if you're going to put a dollar sign in an article, read it from the API.
 instances with GPU instances at published `us-east-1` on-demand rates. The annotation is the
 rate-only break-even, the one number here that does not depend on a local measurement.*
 
-![Table 4: articles/medium/tables/05_table_4.png](tables/05_table_4.png)
+![Table 5: articles/medium/tables/05_table_5.png](tables/05_table_5.png)
 
-*Table 4. Columns: Instance, vCPU / GPU, USD/hour, USD/month (730 h), USD per million forecasts.*
+*Table 5. Columns: Instance, vCPU / GPU, USD/hour, USD/month (730 h), USD per million forecasts.*
 
 Read the two halves of this table differently, because they are not equally solid.
 
@@ -309,9 +336,9 @@ GB-second of request duration [2], so at 6 GB and the measured single-request CP
 million
 single-series requests cost:
 
-![Table 5: articles/medium/tables/05_table_5.png](tables/05_table_5.png)
+![Table 6: articles/medium/tables/05_table_6.png](tables/05_table_6.png)
 
-*Table 5. Columns: Checkpoint, Context, Seconds per request, USD per million requests.*
+*Table 6. Columns: Checkpoint, Context, Seconds per request, USD per million requests.*
 
 Those latencies come from 8 dedicated cores. AWS sizes a serverless endpoint's compute from the
 memory you choose and publishes no core count for it [8], so read the column as a lower bound, for the
@@ -336,6 +363,8 @@ which is what day-ahead forecasting really amounts to, calls for a batch job tha
 - Time each cell dozens of times and report the median with its 5th and 95th percentiles, never a
   mean of a handful of calls; run the sweep twice before reading a difference under 15% on a CPU.
 - Measure throughput at the batch size you will use. On a GPU, batch; on a CPU, do not bother.
+- On a GPU, load the weights as `bfloat16` and check the accuracy on your own windows: here it
+  doubled the throughput at 128 series and changed the WQL by 0.1%.
 - Fetch prices from the Price List API and keep the offer version next to every number.
 - Prefer a batch job for a scheduled forecast, serverless for bursty low volume, a GPU endpoint
   for high steady volume, and write the delete command before the create command.

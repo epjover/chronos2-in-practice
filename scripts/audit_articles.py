@@ -357,63 +357,127 @@ def article_3(r: Results) -> Iterator[str]:
     yield f"| Wind × 0.5 | {half_up(price[0.5], 2)} ({signed(price[0.5] - price[1.0], 2)}) |"
 
 
+def _runs(row: pd.Series) -> str:
+    """``+2.3% to +3.0%``: the skill of the worst and the best single run behind a row."""
+    return f"{spct(row['run_skill_min'])}% to {spct(row['run_skill_max'])}%"
+
+
 def article_4(r: Results) -> Iterator[str]:
-    """Rank sweep costs, skill, the full fine-tune and the out-of-domain check."""
-    costs = pd.concat([r("07_lora_costs"), r("08_full_costs")]).set_index("run")
-    for run in ("lora_r4", "lora_r8", "lora_r16"):
-        c = costs.loc[run]
-        yield (
-            f"| {run} | {int(c['trainable_parameters']):,} "
-            f"| {pct(c['trainable_parameters'] / c['total_parameters'], 2)}% "
-            f"| {half_up(c['train_seconds'] / 60, 1)} min | {thousands(c['peak_vram_mb'])} MB "
-            f"| {half_up(c['artifact_mb'], 1)} MB | {half_up(c['best_eval_loss'], 4)} |"
+    """Rank and seed sweep, the budget chosen on validation, full fine-tune, forgetting, price."""
+    costs = r("07_lora_costs")
+    for rank, group in costs.groupby("rank", sort=True):
+        c = group.mean(numeric_only=True)
+        yield table_row(
+            f"`lora_r{int(rank)}`",
+            f"{int(c['trainable_parameters']):,}",
+            f"{pct(c['trainable_parameters'] / c['total_parameters'], 2)}%",
+            f"{half_up(c['train_seconds'] / 60, 1)} min",
+            f"{thousands(c['peak_vram_mb'])} MB",
+            f"{half_up(c['artifact_mb'], 1)} MB",
+            half_up(c["best_eval_loss"], 4),
         )
-    means = r("07_lora_metrics").groupby("model")[["WQL", "MASE", "WAPE"]].mean()
-    skill = r("07_lora_skill").set_index("model")
-    zero = means.loc["zero-shot"]
+    zero = r("07_lora_metrics")
+    zero = zero.loc[zero["model"] == "zero-shot", ["WQL", "coverage_80"]].mean()
+    yield table_row(
+        "zero-shot", half_up(zero["WQL"], 4), "n/a", "n/a", "n/a", f"{pct(zero['coverage_80'])}%"
+    )
+    ranks = r("07_lora_rank_summary").set_index("model")
+    for run in ("lora_r4", "lora_r8", "lora_r16"):
+        k = ranks.loc[run]
+        yield table_row(
+            f"`{run}`",
+            half_up(k["WQL"], 4),
+            interval(k),
+            _runs(k),
+            f"{pct(k['win_rate'], 0)}%",
+            f"{pct(k['coverage_80'])}%",
+        )
+    single = r("07_lora_run_skill")
+    single = single.loc[single["model"] != "zero-shot", "skill"]
     yield (
-        f"| zero-shot | {half_up(zero['WQL'], 4)} | {half_up(zero['MASE'], 3)} "
-        f"| {pct(zero['WAPE'])}% | n/a | n/a |"
+        f"differ by {half_up(100 * (ranks['skill'].max() - ranks['skill'].min()), 1)} points; two "
+        f"single runs can differ by {half_up(100 * (single.max() - single.min()), 1)}"
     )
-    for run in ("lora_r4", "lora_r8", "lora_r16"):
-        m, k = means.loc[run], skill.loc[run]
-        yield (
-            f"| {run} | {half_up(m['WQL'], 4)} | {half_up(m['MASE'], 3)} | {pct(m['WAPE'])}% "
-            f"| {interval(k)} | {pct(k['win_rate'], 0)}% |"
+    validation = r("07_budget_validation").set_index("candidate")
+    test = r("07_budget_test").set_index("candidate")
+    for candidate, v in validation.iterrows():
+        yield table_row(
+            str(candidate),
+            f"{int(v['best_step']):,} of {int(v['num_steps']):,}",
+            half_up(v["best_eval_loss"], 4),
+            interval(v),
+            interval(test.loc[candidate]),
         )
-    compare = r("08_comparison_metrics").groupby("model")
-    wql, latency = compare["WQL"].mean(), compare["seconds"].median() * 1000
-    full_skill = r("08_comparison_skill").set_index("model")
-    zero_latency = f"{half_up(latency['zero-shot'], 0)} ms"
-    yield table_row(
-        "zero-shot", half_up(wql["zero-shot"], 4), "n/a", "n/a", "n/a", "n/a", zero_latency
-    )
-    for run in ("lora_r8", "full"):
-        c = costs.loc[run]
-        yield (
-            f"| {run} | {half_up(wql[run], 4)} | {interval(full_skill.loc[run])} "
-            f"| {half_up(c['train_seconds'] / 60, 1)} min | {thousands(c['peak_vram_mb'])} MB "
-            f"| {half_up(c['artifact_mb'], 1)} MB | {half_up(latency[run], 0)} ms |"
+    names = {
+        "lora_r8": "LoRA rank 8, library defaults",
+        "lora_tuned": "LoRA rank 8, budget chosen on validation",
+        "full": "full fine-tune, library defaults",
+    }
+    compare = r("08_comparison_summary").set_index("model")
+    for run, label in names.items():
+        k = compare.loc[run]
+        yield table_row(
+            label,
+            half_up(k["WQL"], 4),
+            interval(k),
+            _runs(k),
+            f"{spct(k['mean_change'])}%",
+            f"{pct(k['coverage_80'])}%",
         )
-    away = r("08_forgetting_metrics").groupby("model")[["WQL", "MASE"]].mean()
-    away_skill = r("08_forgetting_skill").set_index("model")
-    untouched = away.loc["zero-shot"]
+        yield table_row(
+            label,
+            f"{half_up(k['train_seconds'] / 60, 1)} min",
+            f"{thousands(k['peak_vram_mb'])} MB",
+            f"{half_up(k['artifact_mb'], 1)} MB",
+            f"{half_up(k['latency_ms'], 0)} ms",
+        )
+    away = r("08_forgetting_summary").set_index("model")
+    away_zero = r("08_forgetting_metrics")
+    away_zero = away_zero.loc[away_zero["model"] == "zero-shot", "WQL"].mean()
+    yield table_row("zero-shot", half_up(away_zero, 4), "n/a", "n/a", "n/a")
+    for run, label in names.items():
+        k = away.loc[run]
+        yield table_row(
+            label, half_up(k["WQL"], 4), interval(k), _runs(k), f"{pct(k['win_rate'], 0)}%"
+        )
+    price_metrics = r("08_price_metrics")
+    price_zero = price_metrics.loc[price_metrics["model"] == "zero-shot"]
+    price_zero = price_zero[["WQL", "coverage_80"]].mean()
     yield table_row(
-        "zero-shot", half_up(untouched["WQL"], 4), half_up(untouched["MASE"], 3), "n/a", "n/a"
+        "zero-shot, with the covariates",
+        half_up(price_zero["WQL"], 4),
+        "n/a",
+        "n/a",
+        f"{pct(price_zero['coverage_80'])}%",
     )
-    for run in ("lora_r8", "full"):
-        a, k = away.loc[run], away_skill.loc[run]
-        yield (
-            f"| {run} | {half_up(a['WQL'], 4)} | {half_up(a['MASE'], 3)} | {interval(k)} "
-            f"| {pct(k['win_rate'], 0)}% |"
+    price = r("08_price_summary").set_index("model")
+    price_validation = r("08_price_validation").set_index("candidate")
+    labels = {
+        "price LoRA, lr 1e-5": ("lr 1e-5", "LoRA, lr 1e-5 (one seed)"),
+        "price LoRA, lr 1e-4": ("lr 1e-4", "LoRA, lr 1e-4 (chosen, three seeds)"),
+    }
+    for model, (candidate, label) in labels.items():
+        k = price.loc[model]
+        yield table_row(
+            label,
+            half_up(k["WQL"], 4),
+            interval(price_validation.loc[candidate]),
+            interval(k),
+            f"{pct(k['coverage_80'])}%",
         )
     sweep = r("03_context_sweep")
     by_context = sweep[sweep["horizon"] == 24].set_index("context")["skill"]
     gain = 100 * (by_context[2048] - by_context[64])
+    ladder = r("05_price_ladder_skill").set_index("model")
     yield f"| Context 64 → 2,048 hours (Part 2) | +{half_up(gain, 0)} points |"
-    yield f"| LoRA rank 8 | {spct(skill.loc['lora_r8', 'skill'])}% |"
-    yield f"| LoRA rank 4 | {spct(skill.loc['lora_r4', 'skill'])}% |"
-    yield f"| Full fine-tune, 119M weights | {spct(full_skill.loc['full', 'skill'])}% |"
+    yield (
+        f"| The operator's forecasts as covariates (Part 3) | "
+        f"{spct(ladder.loc['TSO forecasts, no calendar', 'skill'])}% |"
+    )
+    yield f"| LoRA, budget chosen on validation | {spct(compare.loc['lora_tuned', 'skill'])}% |"
+    yield f"| LoRA, library defaults | {spct(compare.loc['lora_r8', 'skill'])}% |"
+    yield f"| Full fine-tune, library defaults | {spct(compare.loc['full', 'skill'])}% |"
+    yield f"| LoRA on top of covariates | {spct(price.loc['price LoRA, lr 1e-4', 'skill'])}% |"
 
 
 def _skill_against(metrics: pd.DataFrame, model: str, baseline: pd.Series) -> float:
@@ -454,6 +518,25 @@ def article_5(r: Results) -> Iterator[str]:
         f"| {interval(k)} | {pct(k['win_rate'], 0)}% "
         f"| {pct(_skill_against(small, 'chronos-2-small', naive))}% |"
     )
+    half = means.loc["chronos-2-bf16"]
+    k16 = r("bench_variants_skill").set_index("model").loc["chronos-2-bf16"]
+    yield (
+        f"| chronos-2, bfloat16 | 119.5M | {half_up(half['WQL'], 4)} "
+        f"| {pct(half['coverage_80'])}% | {interval(k16)} | {pct(k16['win_rate'], 0)}% "
+        f"| {pct(_skill_against(small, 'chronos-2-bf16', naive))}% |"
+    )
+    for precision, name in (
+        ("float32", "bench_latency_cuda"),
+        ("bfloat16", "bench_latency_cuda_bf16"),
+    ):
+        bench = r(name)
+        rows = bench[(bench["model"] == "amazon/chronos-2") & (bench["context_length"] == 2048)]
+        rows = rows.set_index("batch_size")
+        cells = " | ".join(
+            f"{half_up(rows.loc[b, 'series_per_second'], 1)}/s" for b in (1, 8, 32, 128)
+        )
+        yield f"| {precision} | {cells} | {thousands(rows.loc[128, 'peak_vram_mb'])} MB |"
+        yield f"{half_up(rows.loc[1, 'peak_vram_mb'], 0)} MB"
     for _, row in r("09_service_latency").iterrows():
         yield (
             f"| {int(row['n_series'])} | {thousands(row['client_p50_ms'], 1)} ms "

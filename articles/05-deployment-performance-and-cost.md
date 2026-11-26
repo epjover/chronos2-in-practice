@@ -127,6 +127,7 @@ context, with the interval resampled in blocks of seven days as in Part 2:
 | Checkpoint | Params | WQL | 80% coverage | Skill vs `chronos-2` [95% CI] | Wins | Skill vs seasonal naive |
 | --- | ---: | ---: | ---: | --- | ---: | ---: |
 | `chronos-2` | 119.5M | 0.0388 | 73.4% | n/a | n/a | 63.9% |
+| `chronos-2`, `bfloat16` | 119.5M | 0.0387 | 73.3% | −0.1% [−0.2, −0.0] | 45% | 63.8% |
 | `chronos-2-small` | 27.9M | 0.0426 | 71.5% | **−24.8%** [−31.5, −18.7] | 29% | 54.9% |
 
 That is a real cost. On the typical window the small model's quantile loss comes in a quarter
@@ -135,6 +136,34 @@ naive, and in Part 2's table it would sit above every classical baseline. The fa
 is that `chronos-2-small` is the right checkpoint when throughput is the binding constraint and a
 quarter more error is affordable (a CPU-only serverless endpoint is the obvious case), and the wrong
 one when the forecast's quality is what you are paid for.
+
+**Half precision is the cheaper variant that costs nothing measurable.** The middle row of that
+table is the same checkpoint with its weights loaded as 16-bit floats, which is one argument:
+
+```python
+import torch
+from chronos import Chronos2Pipeline
+
+pipeline = Chronos2Pipeline.from_pretrained(
+    "amazon/chronos-2", device_map="cuda", dtype=torch.bfloat16
+)  # c2p: load_chronos2(device="cuda", dtype="bfloat16")
+```
+
+On the 365 windows its typical window is 0.1% worse than the 32-bit model's, with an interval of
+a tenth of a point either way, and the mean WQL and the coverage differ in the last printed digit.
+The throughput at 2,048 hours of context
+([`bench_latency_cuda_bf16.csv`](../results/bench_latency_cuda_bf16.csv), same card, same
+protocol):
+
+| Precision | 1 series | 8 | 32 | 128 | Peak VRAM at 128 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `float32` | 37.0/s | 170.6/s | 203.5/s | 216.2/s | 1,120 MB |
+| `bfloat16` | 38.2/s | 276.3/s | 373.3/s | 434.6/s | 863 MB |
+
+A single series takes the same 26 to 27 ms either way, because one series does not fill the card.
+From eight series on, half precision is 1.6 to 2.0 times faster, and the memory for one series
+falls from 469 MB to 240 MB. This was measured on the GPU only; the CPU rows above, the service
+of section 2 and the costs of section 3 all use `float32`.
 
 **Single-request latency is good enough everywhere.** One series, 2,048 hours of context, 24-step
 horizon, runs in 27 ms on the GPU (30 ms at the 95th percentile) and 109 ms on 8 CPU cores (154 ms
@@ -351,6 +380,8 @@ which is what day-ahead forecasting really amounts to, calls for a batch job tha
 - Time each cell dozens of times and report the median with its 5th and 95th percentiles, never a
   mean of a handful of calls; run the sweep twice before reading a difference under 15% on a CPU.
 - Measure throughput at the batch size you will use. On a GPU, batch; on a CPU, do not bother.
+- On a GPU, load the weights as `bfloat16` and check the accuracy on your own windows: here it
+  doubled the throughput at 128 series and changed the WQL by 0.1%.
 - Fetch prices from the Price List API and keep the offer version next to every number.
 - Prefer a batch job for a scheduled forecast, serverless for bursty low volume, a GPU endpoint
   for high steady volume, and write the delete command before the create command.

@@ -1,8 +1,8 @@
-# Chronos-2 in Practice (4/5): Fine-Tuning, LoRA Against Full, and What It Buys
+# Chronos-2 in Practice (4/7): Fine-Tuning, LoRA Against Full, and What It Buys
 
-**Five minutes on a consumer GPU and a 4.6 MB adapter bought 2.3% over zero-shot. Training all
-119 million weights bought 1.7%, took a 456 MB checkpoint, and started forgetting. Both numbers
-are smaller than the covariates in Part 3.**
+**Five minutes on a consumer GPU and a 4.6 MB adapter bought about 2% over zero-shot, with an
+interval that touches zero. Training all 119 million weights bought no more and took a 456 MB
+checkpoint. Both gains are smaller than the covariates in Part 3.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
@@ -128,6 +128,14 @@ pipeline.save_pretrained(
 )  # one self-contained folder for Part 5's container
 ```
 
+> **Without the repository.** `c2p.finetune.finetune` wraps one call of the library:
+> `pipeline.fit(inputs=train_inputs, prediction_length=24, validation_inputs=val_inputs,
+> finetune_mode="lora", learning_rate=1e-5, num_steps=1000, batch_size=32,
+> context_length=2048)`. It returns a new pipeline and leaves the original untouched. Left to
+> its defaults, `fit` runs a full fine-tune at `learning_rate=1e-6` with `batch_size=256`, and
+> its documentation recommends 1e-5 for LoRA, so the mode and the learning rate are the two
+> arguments to write out.
+
 Those settings aren't arbitrary and they aren't mine. `Chronos2Model` in `autogluon.timeseries`
 1.6.3 defaults to this combination: LoRA, `fine_tune_lr=1e-5`, `fine_tune_steps=1000`,
 `fine_tune_batch_size=32`, `fine_tune_context_length=2048`. Starting from the library's defaults
@@ -179,20 +187,23 @@ chance throws up across many comparisons. So the defensible summary isn't that r
 others don't, but that all three adapters come in at around two percent and none of them is pinned
 down on its own.
 
+One limit applies to the whole table: each adapter was trained once, with one seed. The table
+cannot separate the effect of the rank from the luck of one initialisation, which is one more
+reason not to read the differences between ranks.
+
 This isn't a paradox. It's the ordinary gap between a loss measured on 26 weeks of 2017 and a skill
 score measured on 365 windows of 2018, and that gap is why the sweep exists in the first place. If
 you tune rank on validation loss alone, you'll pick 16, but the backtest shows you'd be paying four
 times the adapter size for nothing you can demonstrate.
 
-Notice the win rate too: all three arms win about 53% of windows. A 2% average improvement spread
-over 365 days doesn't mean the model has become newly right about the hard days. It means the model
-is very slightly better on most of them.
+Notice the win rate too: all three arms win about 53% of windows. On any given day the adapted
+model is almost as likely to be behind the zero-shot one as ahead of it.
 
 **The coverage cost.** The 80% interval was already too narrow zero-shot, at 73.4% (Part 2). Rank 4
 leaves it there, at 73.4%; the larger adapters make it narrower still (72.0% at rank 8, 70.3% at
 rank 16), and the full fine-tune in section 4 takes it to 68.9%. The more capacity the fine-tune
 has, the more it sharpens the model's confidence, and it does so faster than it improves the
-accuracy. Part 5 shows the repair: a conformal calibration applied *after* the model, which works on
+accuracy. Part 6 shows the repair: a conformal calibration applied *after* the model, which works on
 a fine-tuned checkpoint just as it does on the zero-shot one. If you depend on the intervals (and in
 a day-ahead market you usually do), this is a real cost that the WQL headline hides.
 
@@ -256,7 +267,8 @@ Positive is better than zero-shot. LoRA stays level; the full fine-tune drifts d
 *Table 5. Columns: Model, WQL on temperature, MASE, Skill vs zero-shot [95% CI], Wins.*
 
 This needs stating carefully, because it is easy to oversell. At 52 windows, neither interval
-excludes zero, so we cannot call this proof of catastrophic forgetting. It shows the direction you
+excludes zero, so we cannot call this proof of catastrophic forgetting (the loss of earlier
+abilities when a network is trained on something new; Kirkpatrick et al., 2017). It shows the direction you
 would predict, at the magnitude you would predict, given the sample size that one year of weekly
 windows gives you. LoRA stays flat. The full fine-tune drops 0.8% and loses more windows than it
 wins.
@@ -324,7 +336,8 @@ predictor = TimeSeriesPredictor(prediction_length=24, eval_metric="WQL").fit(
 Pinning `hyperparameters` to `Chronos2` matters because, left alone, AutoGluon fits an ensemble, and
 the resulting accuracy is no longer attributable to this model. The defaults it would use are the
 ones in section 2, so this is the same experiment with less code around it, and it's also how the
-managed deployment path in Part 5 works.
+managed deployment path in Part 5 works. The snippet follows AutoGluon's documentation [5]; this
+series did not run it.
 
 ## Cheat sheet
 
@@ -337,9 +350,9 @@ managed deployment path in Part 5 works.
 ## What's next
 
 Part 5 covers production. It looks at latency and throughput against batch size, context and
-checkpoint on both CPU and GPU, and lays out three deployment paths along with their teardown
-commands. It also works out the cost per million forecasts from published AWS rates, and finishes
-with a monitoring panel that replays 2018 as though the actuals arrived a day late.
+checkpoint on both CPU and GPU, lays out three deployment paths along with their teardown
+commands, and works out the cost per million forecasts from published AWS rates. Part 6 then
+watches the model after it ships and repairs the intervals that fine-tuning made narrower.
 
 ---
 
@@ -358,6 +371,8 @@ with a monitoring panel that replays 2018 as though the actuals arrived a day la
 7. Guo, S. (2026). *Five Ways to Fine-Tune Chronos-2, the Time Series Foundation Model*. Towards
    Data Science.
    https://towardsdatascience.com/five-ways-to-fine-tune-chronos-2-the-time-series-foundation-model/
+8. Kirkpatrick, J., *et al.* (2017). *Overcoming catastrophic forgetting in neural networks*.
+   PNAS 114(13), 3521–3526. https://doi.org/10.1073/pnas.1611835114
 
 **Suggested tags:** Time Series Forecasting · Machine Learning · Foundation Models · LoRA ·
 Python

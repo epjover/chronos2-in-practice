@@ -317,7 +317,8 @@ its own, on the price task of section 3 and on all 365 day-ahead windows. A firs
 analysis used twelve windows, and none of its attributions could be told apart from zero: the
 covariates remove a few thousandths of WQL, less than the difference between one day and the next.
 Sixteen coalitions times 365 windows is 5,840 forecasts, and the stacked windows pass through the
-model in batches, in under three minutes on the GPU of this series.
+model in batches. The notebook as published ran on eight CPU cores, where that takes 32 minutes;
+on the GPU of this series the same cell took two and a half.
 
 ```python
 from c2p.eval import iter_windows

@@ -136,6 +136,15 @@ def article_1(r: Results) -> Iterator[str]:
             f"{int(row['n_windows_worse'])} / {int(row['n_windows'])}",
         )
 
+    levels = ["predictions", "0.01", "0.1", "0.5", "0.9", "0.99"]
+    for _, row in r("01_first_forecast").head(2).iterrows():
+        yield table_row(
+            str(row["item_id"]),
+            str(row["timestamp"])[:16],
+            str(row["target_name"]),
+            *(thousands(row[level]) for level in levels),
+        )
+
 
 def article_2(r: Results) -> Iterator[str]:
     """Baselines, coverage, context sweep, cold start and the two prose intervals."""
@@ -350,6 +359,23 @@ def article_3(r: Results) -> Iterator[str]:
         f"{half_up(last['mean'], 4)} [{half_up(last['ci_low'], 4)}, "
         f"{half_up(last['ci_high'], 4)}] of WQL, and no other single day costs more than "
         f"{half_up(rest, 4)}"
+    )
+    partial = r("05_partial_skill").set_index(["model", "hours"])
+    arms = {
+        "history only": "in the history only",
+        "known for 12 h": "known for the first 12 hours",
+        "known for 24 h": "known for all 24 hours",
+    }
+    for model, label in arms.items():
+        yield table_row(
+            label, *(interval(partial.loc[(model, hours)]) for hours in ("1-12", "13-24", "1-24"))
+        )
+    reached = partial.loc[("known for 12 h", "13-24"), "skill"]
+    yield f"by {spct(reached).lstrip('+')}% with an interval"
+    official = r("05_epf_de_fev_check").set_index("metric")["fev"]
+    yield (
+        f"SQL {half_up(official['SQL'], 4)}, WQL {half_up(official['WQL'], 4)}, "
+        f"MASE {half_up(official['MASE'], 4)}, WAPE {half_up(official['WAPE'], 4)}"
     )
     price = r("06_what_if").groupby("wind_factor")["predictions"].mean()
     yield f"| Operator's forecast | {half_up(price[1.0], 2)} EUR/MWh |"
@@ -745,6 +771,25 @@ def article_7(r: Results) -> Iterator[str]:
             _plain_interval(row.filter(like="window_").rename(lambda name: name[7:])),
             f"{pct(row['store_skill'])}% [{pct(row['store_ci_low'])}, {pct(row['store_ci_high'])}]",
         )
+    left_out = r("10_panel_covariates_skill").set_index("model")
+    labels = {
+        "without StateHoliday": "StateHoliday, the text category",
+        "without SchoolHoliday": "SchoolHoliday",
+        "without DayOfWeek": "DayOfWeek",
+        "without Open": "Open",
+        "without Promo": "Promo",
+        "without Open and StateHoliday": "Open and StateHoliday",
+    }
+    yield table_row("nothing", half_up(left_out.loc["+known covariates", "WQL"], 4), "n/a", "n/a")
+    for key, label in labels.items():
+        row = left_out.loc[key]
+        per_store = row.rename(lambda name: name.removeprefix("store_"))
+        per_window = row.rename(lambda name: name.removeprefix("window_"))
+        yield table_row(label, half_up(row["WQL"], 4), interval(per_store), interval(per_window))
+    for key in ("without Promo", "without Open", "without StateHoliday"):
+        yield f"{pct(-left_out.loc[key, 'store_skill'])}%"
+    both = left_out.loc["without Open and StateHoliday", "store_skill"]
+    yield f"without both by {pct(-both)}%"
     naive = panel.loc["seasonal_naive"]
     yield table_row(
         "seasonal naive (the same weekday last week)",

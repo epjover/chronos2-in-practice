@@ -13,7 +13,7 @@ univariate series.**
 
 [Part 1](#) ended with a single week of Spanish electricity demand and a warning that one week
 proves nothing. In this part the model gets measured properly, with 365 day-ahead forecasts across
-2018, five baselines, and bootstrap intervals, and we ask the three questions a benchmark table
+2018, five baselines, and bootstrap intervals, and it answers three questions a benchmark table
 cannot answer: is it calibrated, how much history does it use, and what happens when a series barely
 has any?
 
@@ -35,15 +35,16 @@ is a strong baseline, and it is a long way from the professional answer.
 - **Code:** [`02_evaluation`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/02_evaluation.ipynb),
   [`03_context_length`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/03_context_length.ipynb),
   [`04_multivariate_coldstart`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/04_multivariate_coldstart.ipynb)
-- **Data:** hourly Spanish electricity load and price, 2015–2018 (CC0), plus observed weather for
-  five cities.
+- **Data:** hourly Spanish electricity load and price, 2015–2018 (CC0) [7], plus observed weather
+  for five cities.
 - **Versions:** `chronos-forecasting==2.3.2`, Python 3.11.
 
 ---
 
 ## 1. Three rules, enforced by construction
 
-Replaying history is easy to get wrong, and the wrong ways all look like good results too.
+Replaying history, the evaluation on a rolling forecasting origin of the textbooks [3], is easy
+to get wrong, and the wrong ways all look like good results too.
 Whether the final number means anything comes down to three rules:
 
 1. **The forecaster only sees the past**, meaning the rows with `timestamp <= cutoff`, and nothing else.
@@ -188,7 +189,7 @@ in at 0.0782 against 0.0748, a skill of −2.5% with an interval that spans zero
 daily naive is, if anything, the *stronger* of the two cheap baselines. The 64% figure is earned.
 
 **The operator's forecast is in another league, and it should be.** The first row is not a model
-we ran. It is the `total load forecast` column of the dataset: the day-ahead forecast the Spanish
+that was run here. It is the `total load forecast` column of the dataset: the day-ahead forecast the Spanish
 grid operator published at the time. EU Regulation 543/2013 (Article 6) requires that forecast to
 be public at the latest two hours before the day-ahead market closes [12], so it existed around ten
 in the morning of the previous day, well before our 22:00 UTC cutoff, and replaying it through the
@@ -340,7 +341,7 @@ your project, don't count on it.
 **The cold start needed a better question.** The intuitive experiment, cutting a series to three
 weeks and seeing whether grouping it with neighbours helped, produced nothing, and the reason
 mattered. On hourly temperature at a 24-hour horizon, three weeks of history cost 3% against four
-years, with an interval that includes zero. The handicap we were trying to repair was barely
+years, with an interval that includes zero. The handicap the experiment set out to repair was barely
 there. So the experiment turned into a sweep, testing how short history has to get before it
 starts to hurt, and whether grouping helps more as it shortens.
 

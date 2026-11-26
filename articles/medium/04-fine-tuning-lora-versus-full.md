@@ -23,17 +23,24 @@ budget, fine-tuning buys two to three percent, and none of the variations tried 
 adapter or all the weights) separates from the others. With a budget chosen on a validation
 period it buys three times that, and it starts to cost something elsewhere. For a tour of the
 fine-tuning *options* the library offers (target-only, covariate-informed, full and LoRA, with and
-without validation), Guo's article on Towards Data Science (2026) is the reference; this part takes
+without validation), Guo's article on Towards Data Science [7] is the reference; this part takes
 those options through the 365-window backtest of Part 2, three seeds at a time.
 
 - **Code:** [`07_finetune_lora`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/07_finetune_lora.ipynb),
   [`08_finetune_full`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/08_finetune_full.ipynb):
   both need a GPU (local, or Colab's T4).
-- **Data:** hourly Spanish electricity, 2015–2018 (CC0): 26 series for training, load and price
+- **Data:** hourly Spanish electricity, 2015–2018 (CC0) [6]: 26 series for training, load and price
   for the test, five cities' temperatures for the out-of-domain check.
 - **Versions:** `chronos-forecasting==2.3.2`, `peft==0.21.2`, Python 3.11.
 - **Hardware:** RTX 3070 (8 GB) for every training time, VRAM figure and latency below; Intel
   Core i9-12900K on the host.
+
+> **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
+> series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
+> **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
+> over windows.
 
 ---
 
@@ -79,8 +86,8 @@ Spanish electricity", not "learn this one series".
 
 ## 2. One LoRA run, and what it costs
 
-Low-Rank Adaptation (Hu et al., 2021) keeps the pretrained weights frozen and trains a small pair
-of matrices alongside each adapted layer. Here, the adapted layers are Chronos-2's own defaults:
+Low-Rank Adaptation [1] keeps the pretrained weights of Chronos-2 [2] frozen and trains a small
+pair of matrices alongside each adapted layer. Here, the adapted layers are Chronos-2's own defaults:
 
 ```python
 # c2p.finetune.LORA_TARGET_MODULES
@@ -93,7 +100,7 @@ LORA_TARGET_MODULES = (
 )
 ```
 
-Copy that tuple rather than leaving it out. If you omit it, `peft` will guess the target modules
+Copy that tuple rather than leaving it out. If you omit it, `peft` [4] will guess the target modules
 from the T5 architecture, and its guess adapts fewer layers than Chronos-2 does.
 
 One run, at rank 8:
@@ -174,7 +181,7 @@ averaged window by window, with 95% block-bootstrap intervals.*
 
 *Table 3. Columns: Model, WQL, Skill vs zero-shot [95% CI], Single runs, Wins, 80% coverage.*
 
-Skill follows fev-bench's definition, the one Part 2 adopted: one minus the geometric mean of the
+Skill follows fev-bench's definition [3], the one Part 2 adopted: one minus the geometric mean of the
 per-window error ratios. Each row averages its three runs window by window before that mean is
 taken, and "Single runs" gives the lowest and the highest of the three on their own.
 
@@ -319,8 +326,8 @@ did not get worse on temperature; the default LoRA is even slightly better, plau
 temperature and electricity share a daily cycle (the experiment does not test that explanation).
 The adapter with the larger budget is 3.6% worse, with an interval that excludes zero, and each of
 its three seeds is worse on its own. That is catastrophic forgetting in its
-mild form (the loss of earlier abilities when a network is trained on something new; Kirkpatrick
-et al., 2017), and it arrives with the gain, not with the number of weights trained.
+mild form (the loss of earlier abilities when a network is trained on something new [8]), and
+it arrives with the gain, not with the number of weights trained.
 
 A frozen base does not protect a LoRA adapter from this: the adapter is merged into the weights
 it was trained beside, and the merged model is the one that forecasts. What limits the drift is how

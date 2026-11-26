@@ -29,7 +29,15 @@ closes the series with a page that puts every lever next to what it bought.
   fev-bench publishes them (`rossmann_1D`) [2].
 - **Versions:** `chronos-forecasting==2.3.2`, `fev==0.10.0`, Python 3.11.
 - **Hardware:** the two notebooks of this part were run on eight CPU cores (Intel Core i9-12900K),
-  and the one throughput figure quoted below is a CPU figure.
+  and the one throughput figure quoted below is a CPU figure. The exception is the covariate
+  table of section 3, whose arms ran on an RTX 3070.
+
+> **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
+> series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
+> **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
+> over windows.
 
 ---
 
@@ -200,6 +208,23 @@ sales and is known only up to yesterday. Adding it changes the error by less tha
 wrong direction (−0.9% [−1.0, −0.9], better on 17% of the stores). That is Part 3's finding on a
 second dataset: what pays is the future of a covariate, not its past.
 
+**One covariate carries most of the gain, and two of them cover for each other.** The five went
+in together. Leaving each one out in turn, against the forecast that had all five
+([`10_panel_covariates_skill.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/10_panel_covariates_skill.csv)):
+
+![Table 5: articles/medium/tables/07_table_5.png](tables/07_table_5.png)
+
+*Table 5. Columns: Left out, WQL, Change per store [95% CI], Change per window [95% CI].*
+
+The promotion calendar is most of it: without it a store's error rises by 30.0%. The weekday and
+the two holiday columns cost about a point each. The last row is the one about categories. `Open`
+says that a store is closed and `StateHoliday` names one reason why, so each covers for the
+other: without one of them the error rises by 4.2% or 0.9%, without both by 43.0%. With the flag
+gone, the label does its job. Chronos-2 turns `a`, `b` or `c` into the store's own average sales
+on such days (Part 3), which is close to zero, and that is enough to say that the store will sell
+nothing. It works for labels the context has seen; a holiday kind absent from a store's history
+would arrive as the store's mean and say nothing.
+
 **Cross-learning does not help stores that have their own history.** Letting the stores of a batch
 share information costs a little (−2.1% [−2.5, −1.8], better on 36% of the stores). Part 2
 measured its gain where it exists: a series with one to three weeks of history, helped by four
@@ -253,9 +278,9 @@ a weighted sum. Nobody told the model the weekday or the month of the day about 
 so those are the properties to probe for
 ([`11_probe_accuracy.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/11_probe_accuracy.csv)):
 
-![Table 5: articles/medium/tables/07_table_5.png](tables/07_table_5.png)
+![Table 6: articles/medium/tables/07_table_6.png](tables/07_table_6.png)
 
-*Table 5. Columns: Representation, Weekday of the next day, Month of the next day.*
+*Table 6. Columns: Representation, Weekday of the next day, Month of the next day.*
 
 ![Figure 3: results/figures/11_probe_accuracy.png](../../results/figures/11_probe_accuracy.png)
 
@@ -275,9 +300,9 @@ by cosine similarity and average what came after them, rescaled to the level of 
 forecast it has no interval and is not a contender; as a test it asks whether neighbours in
 embedding space continue the same way ([`11_analog_forecast.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/11_analog_forecast.csv)).
 
-![Table 6: articles/medium/tables/07_table_6.png](tables/07_table_6.png)
+![Table 7: articles/medium/tables/07_table_7.png](tables/07_table_7.png)
 
-*Table 6. Columns: Forecast of the next 24 hours, WAPE, Points against raw-window analogs [95% CI].*
+*Table 7. Columns: Forecast of the next 24 hours, WAPE, Points against raw-window analogs [95% CI].*
 
 ![Figure 4: results/figures/11_analog_days.png](../../results/figures/11_analog_days.png)
 
@@ -316,9 +341,9 @@ of the 2018 windows, each mild enough to pass unnoticed in a chart
 ([`11_anomaly_auc.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/11_anomaly_auc.csv); the measure is the ROC AUC, the chance that
 a window with the defect scores above one without, so 0.5 is a coin).
 
-![Table 7: articles/medium/tables/07_table_7.png](tables/07_table_7.png)
+![Table 8: articles/medium/tables/07_table_8.png](tables/07_table_8.png)
 
-*Table 7. Columns: Anomaly, Raw window, Embedding (mean), Embedding ([REG]), Embedding (future patch).*
+*Table 8. Columns: Anomaly, Raw window, Embedding (mean), Embedding ([REG]), Embedding (future patch).*
 
 The frozen feed is the row to read. A window whose last twelve hours repeat one value scores above
 a clean one 95% of the time with the future-patch token and 62% with the raw values. In raw space
@@ -344,12 +369,14 @@ read from a results file by
 [`scripts/series_summary.py`](https://github.com/epjover/chronos2-in-practice/blob/main/scripts/series_summary.py)
 ([`12_series_summary.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/12_series_summary.csv)), in the order of the series:
 
-![Table 8: articles/medium/tables/07_table_8.png](tables/07_table_8.png)
+![Table 9: articles/medium/tables/07_table_9.png](tables/07_table_9.png)
 
-*Table 8. Columns: Lever, Effect, Measured as, Where.*
+*Table 9. Columns: Lever, Effect, Measured as, Where.*
 
 The rows sit on different scales and different targets. What the table shows is an ordering, not
-a sum. The large effects come from giving the model something: enough history, a regular grid,
+a sum. It is also the ordering on this data: most rows come from one country's electricity in one
+test year, with EPF-DE and the Rossmann panel as the two checks from outside. The order in which
+to try the levers should carry to other data; their sizes are for your own backtest to say. The large effects come from giving the model something: enough history, a regular grid,
 the future values of what is known. Changing the weights moved the number less: two to three
 percent at the library's defaults, 8% with a budget chosen on a validation period, and that
 adapter was worse on a series it was not trained on. A smaller model moved the number down.
@@ -380,6 +407,11 @@ the hourly and the daily forecasts agree. Neither is in Chronos-2 today.
 three weeks of history. The Rossmann panel is the place to test it properly: hide the history of a
 hundred stores, keep their promotions calendar, and measure what the other thousand add.
 
+**What was not measured.** Everything here is hourly or daily. Data finer than an hour, series
+of counts with many zeros, and horizons past the 1,024 steps the model predicts in one pass
+(beyond that it feeds its own forecast back, Part 1) were left out, and nothing in this series
+says how the model behaves there.
+
 **Text.** A promotion has a description and a holiday has a name. The paper lists multimodal
 inputs as future work [1]; until then, anything written has to become a number or a category
 before the model sees it.
@@ -397,6 +429,8 @@ dependence between days. It was written down so that the model it describes can 
   short, forecast the hours and add them up. Two minutes of backtest decide.
 - On a panel, known covariates first: plans (opening days, promotions) pay more than
   forecasts. Skip covariates whose future you do not have.
+- Leave each covariate out once. Here one of five carried most of the gain, and two were
+  redundant with each other.
 - Do not expect cross-learning to help series that have their own history.
 - Read a panel per window for the future and per series for the business; say which one you
   report.

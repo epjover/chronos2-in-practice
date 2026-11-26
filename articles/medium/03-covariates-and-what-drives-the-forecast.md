@@ -32,7 +32,15 @@ foundation model does and does not do with a nearly perfect input.
 
 - **Code:** [`05_covariates`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/05_covariates.ipynb),
   [`06_explainability`](https://github.com/epjover/chronos2-in-practice/blob/main/notebooks/06_explainability.ipynb)
+- **Data:** hourly Spanish electricity, 2015–2018 (CC0) [7], and fev-bench's EPF-DE task [2].
 - **Versions:** `chronos-forecasting==2.3.2`, `fev==0.10.0`, Python 3.11.
+
+> **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
+> series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
+> **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
+> over windows.
 
 ---
 
@@ -103,6 +111,12 @@ assert_cutoffs_match(task, epf, config)  # our 20 windows == fev's 20 published 
 If the translation were off by a single step, that assertion fails and the replication stops. The check is less of a formality than it sounds, because without it, "we reproduced the benchmark task" is just a claim
 nobody can check, including you.
 
+A second check comes from outside the repository. `Chronos2Pipeline.predict_fev(task)` is the
+library's own route to a fev task, and `task.evaluation_summary` scores its predictions with fev's
+code, so none of this repository's harness takes part. Its four numbers (SQL 0.4911, WQL 0.2407,
+MASE 0.6042, WAPE 0.2910) are the ones of the `known_future` row below, to the sixth decimal
+([`05_epf_de_fev_check.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/05_epf_de_fev_check.csv)).
+
 Three arms keep apart two effects that are easy to mix up:
 
 ![Table 1: articles/medium/tables/03_table_1.png](tables/03_table_1.png)
@@ -113,6 +127,10 @@ Three arms keep apart two effects that are easy to mix up:
 
 *Figure 1. EPF-DE: the covariates' history against their future, scored on the task's own 20
 windows.*
+
+The skill column is Part 2's: one minus the geometric mean of the per-window WQL ratios. It need
+not equal the ratio of the two mean WQLs printed beside it, because a mean is dominated by the
+worst windows and the skill weighs every window equally.
 
 **Knowing the future is roughly four and a half times as valuable as knowing the history.** If most of the gain had shown up in `past_only`, covariates would just be extra context,
 and you could stop worrying about forecast availability. It didn't turn out that way, and that
@@ -189,6 +207,25 @@ The `+past generation` rung reaches 11.8%, which looks like three and a half mor
 +3.1]. Most of that apparent gain was the calendar's small cost being diluted. A ladder is only as
 good as its rungs, and this one needed the extra row to be read correctly.
 
+**When the forecast stops before the horizon does.** The ladder assumes that the operator's
+forecasts cover all 24 hours. A covariate's own forecast is often shorter than the horizon (a
+weather forecast that ends, a promotion calendar that stops with the month), and `predict_df`
+handles that with no flag either: a NaN in `future_df` means "not known at this step", and a
+`future_df` that is NaN everywhere gives the same forecast as none. The three forecasts again,
+given three ways and scored by half of the day against the price with no covariates
+([`05_partial_skill.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/05_partial_skill.csv)):
+
+![Table 4: articles/medium/tables/03_table_4.png](tables/03_table_4.png)
+
+*Table 4. Columns: The operator's forecasts are, Hours 1–12, Hours 13–24, All 24 hours.*
+
+On the hours it covers, a forecast known for half of the day is as good as one known for all of
+it. It also helps the hours it does not reach, by 4.4% with an interval clear of zero, plausibly
+because a better first half of the day carries into the second. And the history of the three
+forecasts, with no future at all, brings nothing here, where on EPF-DE it brought 11.0%. A
+covariate that reaches only part of the horizon is still a covariate to pass, with NaN in the
+steps it does not reach, which is how the library is told that a value is not known.
+
 The direction of the wind effect is the textbook one. Wind and solar have near-zero marginal cost,
 so a windy day pushes expensive plants out of the merit order and lowers the price [10], and a
 forecast of wind is a forecast of that pressure.
@@ -205,9 +242,9 @@ depends on the comparator, the information set and the evaluation period [8].
 
 Two arms probe the mistake, and they disagree, which is what makes it interesting.
 
-![Table 4: articles/medium/tables/03_table_4.png](tables/03_table_4.png)
+![Table 5: articles/medium/tables/03_table_5.png](tables/03_table_5.png)
 
-*Table 4. Columns: Arm, Skill vs none, Wins.*
+*Table 5. Columns: Arm, Skill vs none, Wins.*
 
 **Swapping the published forecasts for the observed values changes almost nothing**, and if anything
 leaves results a touch worse. The reason has more to do with economics than with statistics. The
@@ -241,16 +278,25 @@ column's dtype, and `predict_df` does the rest:
 frame["weekday"] = frame["timestamp"].dt.day_name().astype("category")  # a category, not a number
 ```
 
+What "the rest" is matters for what a category can do. The model has no table of labels: the
+library turns each label into a number before the forward pass (`chronos2/preprocess.py` in
+version 2.3.2). With one target that number is a target encoding per series: the mean of that
+series' own target over the context rows carrying the label, pulled slightly toward the series
+mean. With several targets it is an ordinal code. A missing value counts as a label of its own,
+and a label that appears in `future_df` but never in the context becomes the series mean, which
+tells the model nothing. A category is therefore as informative as its history in the context.
+
 Both versions were added to the price history as a known-future covariate, on the 365 windows:
 
-![Table 5: articles/medium/tables/03_table_5.png](tables/03_table_5.png)
+![Table 6: articles/medium/tables/03_table_6.png](tables/03_table_6.png)
 
-*Table 5. Columns: Weekday given as, WQL, Skill vs no covariates.*
+*Table 6. Columns: Weekday given as, WQL, Skill vs no covariates.*
 
 Neither helps, which section 3 already predicted for a periodic feature, and the encoding makes no
 difference that a year of windows can detect. That is the reassuring result. The encoding will
 matter for a covariate whose categories carry information the series does not (a promotion type,
-a tariff, a holiday kind): Part 7 uses one of those on a retail panel.
+a tariff, a holiday kind): Part 7 has one of those on a retail panel, and measures what the
+forecast loses without it.
 
 ## 6. When the covariate is a professional forecast of the target
 
@@ -269,9 +315,9 @@ The operator publishes one number per hour, so the comparison is made twice: on 
 that states its uncertainty is scored on its quantiles and the operator on a single number, and on
 WAPE, where both sides are point forecasts.
 
-![Table 6: articles/medium/tables/03_table_6.png](tables/03_table_6.png)
+![Table 7: articles/medium/tables/03_table_7.png](tables/03_table_7.png)
 
-*Table 6. Columns: Forecast of Spanish load, WQL, WAPE, 80% band covers, WAPE vs the operator.*
+*Table 7. Columns: Forecast of Spanish load, WQL, WAPE, 80% band covers, WAPE vs the operator.*
 
 **As a covariate, the operator's forecast cuts Chronos-2's error by almost three quarters, and
 leaves it worse than the forecast it was given.** The error falls from 4.67% to 1.28%, the largest
@@ -356,9 +402,9 @@ level rather than its error, which matters when there are no actuals yet to comp
 *Figure 3. Exact Shapley values over sixteen coalitions: each player's average marginal
 contribution to the WQL reduction over 365 windows, with its 95% interval.*
 
-![Table 7: articles/medium/tables/03_table_7.png](tables/03_table_7.png)
+![Table 8: articles/medium/tables/03_table_8.png](tables/03_table_8.png)
 
-*Table 7. Columns: Player, Ablation, Permutation, Shapley.*
+*Table 8. Columns: Player, Ablation, Permutation, Shapley.*
 
 The numbers are in units of WQL removed, and the last row is the sanity check: the four players'
 Shapley values add up, window by window, to what all the covariates remove together, 0.0032 of
@@ -383,7 +429,7 @@ what you should keep; the ladder is what answers the second question.
 
 ## 8. Which part of the past?
 
-The same machinery applies to the target's own history. Hertel et al. (2026) cut the context into
+The same machinery applies to the target's own history. Hertel et al. (2026) [3] cut the context into
 four segments, the last day, the rest of the week, the rest of four weeks and everything older, and
 treat each one as a player that a coalition can switch off. The windows are the same 365, and the
 intervals resample them in the same weekly blocks.
@@ -393,9 +439,9 @@ intervals resample them in the same weekly blocks.
 *Figure 4. Shapley values of four context segments over the 365 windows, with 95% block-bootstrap
 intervals.*
 
-![Table 8: articles/medium/tables/03_table_8.png](tables/03_table_8.png)
+![Table 9: articles/medium/tables/03_table_9.png](tables/03_table_9.png)
 
-*Table 8. Columns: Segment, Shapley value [95% CI].*
+*Table 9. Columns: Segment, Shapley value [95% CI].*
 
 **The price's own history outweighs the covariates by more than an order of magnitude.** The whole
 context removes 0.1084 of WQL; the four covariate players of section 7 remove 0.0032 between them.
@@ -440,9 +486,9 @@ future_more_wind = future.assign(
 *Figure 6. The same day forecast three times, with the operator's wind forecast scaled. Lines
 are the three medians; the band is the 80% interval of the unscaled forecast.*
 
-![Table 9: articles/medium/tables/03_table_9.png](tables/03_table_9.png)
+![Table 10: articles/medium/tables/03_table_10.png](tables/03_table_10.png)
 
-*Table 9. Columns: Scenario, Mean predicted price.*
+*Table 10. Columns: Scenario, Mean predicted price.*
 
 More wind lowers the predicted price, and less wind raises it. In the Spanish market that's the
 correct direction, because renewables with near-zero marginal cost displace expensive plants in the

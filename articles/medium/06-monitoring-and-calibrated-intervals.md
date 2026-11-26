@@ -27,6 +27,13 @@ does not hold in a winter it has not seen.
   for the calibration.
 - **Versions:** `chronos-forecasting==2.3.2`, Python 3.11.
 
+> **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
+> series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
+> **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
+> over windows.
+
 ---
 
 ## 1. The forecast arrives before the truth does
@@ -150,7 +157,7 @@ months breaks the condition, and the coverage with it. So the right way to read 
 is as a measurement of how far the condition holds on this series, month by month, and not as a
 guarantee that was bought.
 
-The protocol is set up so that nothing can have seen 2018. We calibrate on the 184 day-ahead windows
+The protocol is set up so that nothing can have seen 2018. Calibration uses the 184 day-ahead windows
 of the second half of 2017 (Part 4's validation period) and score on Part 2's 365 windows of 2018,
 through the same harness
 ([`monitoring/calibrate_intervals.py`](https://github.com/epjover/chronos2-in-practice/blob/main/monitoring/calibrate_intervals.py)). There are two

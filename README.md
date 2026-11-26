@@ -166,10 +166,10 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── config.py           # paths, fast mode, seeds, device selection
 │   ├── schema.py           # column names, quantile levels, Forecaster protocol
 │   ├── data.py             # loading and the data checklist (validate_and_prepare)
-│   ├── eval.py             # rolling-origin backtests, metrics, skill scores, block bootstrap
+│   ├── eval.py             # rolling-origin backtests, metrics, skill scores, block bootstrap, errors by step, block and series
 │   ├── experiments.py      # the protocol every article shares: periods, windows, columns
 │   ├── models.py           # Chronos-2 forecaster; loading in float32 or half precision
-│   ├── baselines.py        # Seasonal Naive, AutoETS, MSTL, Chronos-Bolt, a published forecast
+│   ├── baselines.py        # Seasonal Naive, AutoETS, MSTL, Chronos-Bolt, a published forecast, covariates known for part of the horizon
 │   │                       #   and the model that forecasts its errors
 │   ├── explain.py          # ablation, permutation, exact Shapley values, occlusion
 │   ├── finetune.py         # splits, LoRA and full fine-tuning

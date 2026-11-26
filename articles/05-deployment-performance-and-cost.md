@@ -44,6 +44,13 @@ which is which. Treat the AWS code as a starting point that still has to meet a 
   threads; NVIDIA RTX 3070 (8 GB). Every timing below is the median of 30 calls on this machine,
   with its percentiles, and says so in its CSV.
 
+> **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
+> series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
+> **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
+> over windows.
+
 ---
 
 ## 1. Throughput: batch size matters more than hardware, until it doesn't
@@ -163,7 +170,8 @@ protocol):
 A single series takes the same 26 to 27 ms either way, because one series does not fill the card.
 From eight series on, half precision is 1.6 to 2.0 times faster, and the memory for one series
 falls from 469 MB to 240 MB. This was measured on the GPU only; the CPU rows above, the service
-of section 2 and the costs of section 3 all use `float32`.
+of section 2 and the costs of section 3 all use `float32`. Precision is the only lever of this
+kind that the series measured: `torch.compile`, an ONNX export and quantization were not tried.
 
 **The same call without pandas.** Every number in this series goes through `predict_df`, which
 takes and returns data frames. A service that already holds arrays can call the model on them

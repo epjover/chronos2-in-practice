@@ -19,7 +19,8 @@ about three tenths of a second, and the median forecast lands 811 MW from what h
 Then you delete 18 rows from the input, not the values but the *rows* themselves, the way a failed
 export or a careless `dropna()` deletes them. You hand the model that, tell it the data is hourly,
 and nothing complains, no error, no warning. Its error more than doubles. Across 40 forecast
-origins spread over a year, the weighted quantile loss rises by 104% on average, and by 208% at a
+origins spread over a year, the weighted quantile loss (WQL: the error of the forecast's quantiles
+as a share of the series' level, defined in Part 2) rises by 104% on average, and by 208% at a
 typical origin.
 
 This article is about the gap between those two paragraphs. Part 1 of seven covers what Chronos-2
@@ -242,7 +243,7 @@ about a quarter more quantile loss, so quote that figure rather than this one.
 
 ## 4. Your first forecast, in ten lines
 
-We forecast Spanish national load (`load_actual`, in MW) 168 hours ahead from a fixed origin: Sunday
+The target is Spanish national load (`load_actual`, in MW), forecast 168 hours ahead from a fixed origin: Sunday
 2018-11-11 22:00 UTC, which is 23:00 in Madrid, so the horizon runs from Monday 00:00 to Sunday
 23:00 local time. Rather than trusting that sentence, the notebook checks it against the calendar,
 and confirms that the week contains no national holiday. Holiday weeks are where a calendar covariate pays off, and that comes up in Part 3.
@@ -263,11 +264,21 @@ forecast = pipeline.predict_df(
 ```
 
 That's the API for a first forecast: a long-format frame with one row per `item_id` and `timestamp`,
-a cutoff, `from_pretrained`, and `predict_df`. A couple of points about that call:
+a cutoff, `from_pretrained`, and `predict_df`. What comes back is a long frame too, one row per
+series and forecast step, with the median in `predictions` and one column per requested level.
+Its first two rows (`forecast.head(2)`, in MW, rounded here):
+
+| item_id | timestamp | target_name | predictions | 0.01 | 0.1 | 0.5 | 0.9 | 0.99 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES | 2018-11-11 23:00 | load_actual | 24,268 | 23,394 | 23,983 | 24,268 | 24,704 | 26,171 |
+| ES | 2018-11-12 00:00 | load_actual | 23,102 | 21,932 | 22,671 | 23,102 | 23,595 | 25,371 |
+
+A couple of points about that call:
 
 - **Do not pass `freq`.** If you leave it out, `predict_df` infers the frequency from the timestamps and *refuses* a series with missing rows. Passing `freq` switches that check off, so only do this for data you have already verified (section 5 covers this in detail).
 - Timestamps must be timezone-naive, because timezone-aware ones raise an error.
 - `quantile_levels` chooses what comes back. Native levels are returned as predicted, and others are interpolated between them. The `predictions` column is the median.
+- For several series, stack them in the same frame under different `item_id` values. Each one is forecast on its own and the rows come back stacked; letting them inform each other is a separate argument, `cross_learning`, which Part 2 measures.
 
 ![Figure 3: results/figures/01_fan_chart.png](../results/figures/01_fan_chart.png)
 

@@ -19,7 +19,8 @@ about three tenths of a second, and the median forecast lands 811 MW from what h
 Then you delete 18 rows from the input, not the values but the *rows* themselves, the way a failed
 export or a careless `dropna()` deletes them. You hand the model that, tell it the data is hourly,
 and nothing complains, no error, no warning. Its error more than doubles. Across 40 forecast
-origins spread over a year, the weighted quantile loss rises by 104% on average, and by 208% at a
+origins spread over a year, the weighted quantile loss (WQL: the error of the forecast's quantiles
+as a share of the series' level, defined in Part 2) rises by 104% on average, and by 208% at a
 typical origin.
 
 This article is about the gap between those two paragraphs. Part 1 of seven covers what Chronos-2
@@ -234,7 +235,7 @@ about a quarter more quantile loss, so quote that figure rather than this one.
 
 ## 4. Your first forecast, in ten lines
 
-We forecast Spanish national load (`load_actual`, in MW) 168 hours ahead from a fixed origin: Sunday
+The target is Spanish national load (`load_actual`, in MW), forecast 168 hours ahead from a fixed origin: Sunday
 2018-11-11 22:00 UTC, which is 23:00 in Madrid, so the horizon runs from Monday 00:00 to Sunday
 23:00 local time. Rather than trusting that sentence, the notebook checks it against the calendar,
 and confirms that the week contains no national holiday. Holiday weeks are where a calendar covariate pays off, and that comes up in Part 3.
@@ -255,11 +256,20 @@ forecast = pipeline.predict_df(
 ```
 
 That's the API for a first forecast: a long-format frame with one row per `item_id` and `timestamp`,
-a cutoff, `from_pretrained`, and `predict_df`. A couple of points about that call:
+a cutoff, `from_pretrained`, and `predict_df`. What comes back is a long frame too, one row per
+series and forecast step, with the median in `predictions` and one column per requested level.
+Its first two rows (`forecast.head(2)`, in MW, rounded here):
+
+![Table 3: articles/medium/tables/01_table_3.png](tables/01_table_3.png)
+
+*Table 3. Columns: item_id, timestamp, target_name, predictions, 0.01, 0.1, 0.5, 0.9, 0.99.*
+
+A couple of points about that call:
 
 - **Do not pass `freq`.** If you leave it out, `predict_df` infers the frequency from the timestamps and *refuses* a series with missing rows. Passing `freq` switches that check off, so only do this for data you have already verified (section 5 covers this in detail).
 - Timestamps must be timezone-naive, because timezone-aware ones raise an error.
 - `quantile_levels` chooses what comes back. Native levels are returned as predicted, and others are interpolated between them. The `predictions` column is the median.
+- For several series, stack them in the same frame under different `item_id` values. Each one is forecast on its own and the rows come back stacked; letting them inform each other is a separate argument, `cross_learning`, which Part 2 measures.
 
 ![Figure 3: results/figures/01_fan_chart.png](../../results/figures/01_fan_chart.png)
 
@@ -273,9 +283,9 @@ stays inside the bands about as often as it should.
 
 For this week:
 
-![Table 3: articles/medium/tables/01_table_3.png](tables/01_table_3.png)
+![Table 4: articles/medium/tables/01_table_4.png](tables/01_table_4.png)
 
-*Table 3. Columns: .*
+*Table 4. Columns: .*
 
 If anything the bands are a little wide here. And one week is an anecdote in either direction,
 because in the 24-hour backtest of the next section, the same model on the same clean series has a
@@ -292,9 +302,9 @@ back out. Inside, every step is just "the one after the previous one".
 Put that together with how the input is built, and the three common data problems separate out
 cleanly:
 
-![Table 4: articles/medium/tables/01_table_4.png](tables/01_table_4.png)
+![Table 5: articles/medium/tables/01_table_5.png](tables/01_table_5.png)
 
-*Table 4. Columns: Situation, What the model does, What that means for you.*
+*Table 5. Columns: Situation, What the model does, What that means for you.*
 
 How much each one costs is a measurement, not an opinion. (For an independent test of what
 Chronos-2 does with a missing past target and with missing covariates, see [10].)
@@ -309,9 +319,9 @@ harness keeps the clean series intact, so cutoffs, actuals and metric scaling st
 scenarios. Each window's random generator is seeded from its own cutoff, so the gaps land on the
 same hours in every gap scenario.
 
-![Table 5: articles/medium/tables/01_table_5.png](tables/01_table_5.png)
+![Table 6: articles/medium/tables/01_table_6.png](tables/01_table_6.png)
 
-*Table 5. Columns: Scenario, What the model receives.*
+*Table 6. Columns: Scenario, What the model receives.*
 
 ![Figure 4: results/figures/00_messy_data_scenarios.png](../../results/figures/00_messy_data_scenarios.png)
 
@@ -324,9 +334,9 @@ same hours in every gap scenario.
 *Figure 5. WQL change against clean data over 40 windows. Left: change in the mean. Right: the
 typical window, as the geometric mean of the paired ratios.*
 
-![Table 6: articles/medium/tables/01_table_6.png](tables/01_table_6.png)
+![Table 7: articles/medium/tables/01_table_7.png](tables/01_table_7.png)
 
-*Table 6. Columns: Scenario, Mean WQL change, Typical window, 95% interval, Worse in.*
+*Table 7. Columns: Scenario, Mean WQL change, Typical window, 95% interval, Worse in.*
 
 The two middle columns answer different questions, and they can disagree. The mean change is the
 change in the average loss, which the worst windows dominate; the typical window is the geometric
@@ -400,9 +410,9 @@ carries a leading space that silently breaks every join you write against it.
 
 What the checklist checks, and why:
 
-![Table 7: articles/medium/tables/01_table_7.png](tables/01_table_7.png)
+![Table 8: articles/medium/tables/01_table_8.png](tables/01_table_8.png)
 
-*Table 7. Columns: Check, Why it matters, What to do.*
+*Table 8. Columns: Check, Why it matters, What to do.*
 
 And a short list of what **not** to do, because Chronos-2 already does it or doesn't need it: don't
 normalise, don't difference, don't detrend, don't impute. The model standardises each series itself

@@ -1221,6 +1221,73 @@ def test_block_length_is_validated() -> None:
     assert table["block_length"].tolist() == [3, 3]
 
 
+def test_total_skill_is_the_change_of_the_summed_error() -> None:
+    model, baseline = [1.0, 1.0, 9.0], [2.0, 2.0, 6.0]
+    metrics = metrics_frame(m=model, seasonal_naive=baseline)
+    typical = skill_score(metrics, model="m")
+    total = skill_score(metrics, model="m", aggregate="total")
+
+    assert total.skill == pytest.approx(1 - 11.0 / 10.0)  # the bad window outweighs the others
+    assert typical.skill == pytest.approx(1 - (0.5 * 0.5 * 1.5) ** (1 / 3))
+    assert typical.skill > 0 > total.skill  # better on a typical window, worse in total
+    assert (total.win_rate, total.n_units) == (typical.win_rate, typical.n_units)
+    assert total.ci_low <= total.skill <= total.ci_high
+
+
+def test_total_and_geometric_skill_agree_when_every_window_changes_alike() -> None:
+    baseline = np.random.default_rng(1).uniform(0.5, 5.0, 50)
+    metrics = metrics_frame(m=0.8 * baseline, seasonal_naive=baseline)
+    for aggregate in ("geometric", "total"):
+        score = skill_score(metrics, model="m", aggregate=aggregate, block_length=5)
+        assert score.skill == pytest.approx(0.2)
+        assert score.ci_low == pytest.approx(0.2) and score.ci_high == pytest.approx(0.2)
+
+
+def test_total_skill_ignores_the_clip_and_is_deterministic() -> None:
+    metrics = metrics_frame(m=[1000.0, 1.0, 1.0, 2.0], seasonal_naive=[1.0, 1.0, 2.0, 1.0])
+    total = skill_score(metrics, model="m", aggregate="total")
+    assert total.skill == pytest.approx(1 - 1004.0 / 5.0)  # the geometric ratio would clip at 100
+    blocks = skill_score(metrics, model="m", aggregate="total", block_length=2)
+    assert blocks.skill == pytest.approx(total.skill) and blocks.block_length == 2
+
+    rng = np.random.default_rng(4)
+    baseline = rng.uniform(0.5, 1.5, 80)
+    noisy = metrics_frame(m=baseline * rng.uniform(0.5, 1.4, 80), seasonal_naive=baseline)
+    score = skill_score(noisy, model="m", aggregate="total", seed=7)
+    assert skill_score(noisy, model="m", aggregate="total", seed=7) == score
+    assert skill_score(noisy, model="m", aggregate="total", seed=8) != score
+
+
+def test_aggregate_is_validated_and_a_zero_total_is_rejected() -> None:
+    metrics = metrics_frame(m=[1.0, 2.0], seasonal_naive=[2.0, 2.0])
+    with pytest.raises(ValueError, match="aggregate must be"):
+        skill_score(metrics, model="m", aggregate="mean")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="aggregate must be"):
+        skill_table(metrics, aggregate="mean")  # type: ignore[arg-type]
+    zero = metrics_frame(m=[1.0, 2.0], seasonal_naive=[0.0, 0.0])
+    with pytest.raises(ValueError, match="total error is zero"):
+        skill_score(zero, model="m", aggregate="total")
+
+
+def test_skill_table_with_both_aggregates_adds_the_total_columns() -> None:
+    rng = np.random.default_rng(2)
+    baseline = rng.uniform(0.5, 1.5, 60)
+    metrics = metrics_frame(m=baseline * rng.uniform(0.5, 1.4, 60), seasonal_naive=baseline)
+    geometric = skill_table(metrics, block_length=7)
+    total = skill_table(metrics, block_length=7, aggregate="total").set_index(MODEL_COL)
+    both = skill_table(metrics, block_length=7, aggregate="both")
+
+    pd.testing.assert_frame_equal(both[geometric.columns], geometric)
+    assert both[MODEL_COL].tolist() == geometric[MODEL_COL].tolist()  # ordered by skill
+    for row in both.itertuples():
+        expected = total.loc[row.model]
+        assert row.total_skill == pytest.approx(expected["skill"])
+        assert row.total_ci_low == pytest.approx(expected["ci_low"])
+        assert row.total_ci_high == pytest.approx(expected["ci_high"])
+    naive = both.set_index(MODEL_COL).loc["seasonal_naive"]
+    assert naive["total_skill"] == pytest.approx(0.0)
+
+
 def test_win_rate_counts_ties_as_half() -> None:
     metrics = metrics_frame(m=[1.0, 2.0, 3.0, 4.0], seasonal_naive=[1.0, 3.0, 2.0, 5.0])
     assert skill_score(metrics, model="m").win_rate == pytest.approx((2 + 0.5) / 4)

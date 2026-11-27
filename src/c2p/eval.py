@@ -33,6 +33,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from itertools import pairwise
 from numbers import Integral
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -982,8 +983,11 @@ def _pooled_errors(forecasts: pd.DataFrame, by: str) -> pd.DataFrame:
 
 @dataclass(frozen=True)
 class SkillScore:
-    """Skill of ``model`` over ``baseline`` on ``metric``: ``1 - gmean(model / baseline)``.
+    """Skill of ``model`` over ``baseline`` on ``metric``, as returned by :func:`skill_score`.
 
+    ``skill`` is ``1 - gmean(model / baseline)`` over the windows (the typical window) or,
+    when it was asked for with ``aggregate="total"``, ``1 - sum(model) / sum(baseline)`` (the
+    error of all the windows together).
     ``ci_low``/``ci_high`` bound the 95% bootstrap interval over the ``n_units`` windows;
     ``win_rate`` is the share of windows where the model beats the baseline (ties count 0.5).
     ``block_length`` is the run of consecutive windows the bootstrap resampled together (1 =
@@ -1012,6 +1016,7 @@ def skill_score(
     clip: tuple[float, float] = (0.01, 100.0),
     block_length: int = 1,
     unit: str = WINDOW_COL,
+    aggregate: Literal["geometric", "total"] = "geometric",
 ) -> SkillScore:
     """Skill score of ``model`` relative to ``baseline``, with a bootstrap confidence interval.
 
@@ -1031,6 +1036,14 @@ def skill_score(
     ``unit`` names the column whose values are the paired units, one row per model and unit:
     windows by default, or ``"item_id"`` for the per-series errors of :func:`error_by_series`,
     which resamples the series of a panel instead of its windows.
+
+    ``aggregate`` chooses what the windows are summarised into, and the two answer different
+    questions. ``"geometric"`` (the default, described above) gives every window the same
+    weight whatever the size of its error: it is the change on a *typical* window.
+    ``"total"`` is ``1 - sum(model errors) / sum(baseline errors)``, the change of the error
+    of all the windows together, in which a bad day weighs as much as its error; ``clip`` does
+    not apply to it. When a few windows hold much of the error the two can differ by many
+    points, and even in sign, so a comparison between models should report both.
     """
     model_errors, baseline_errors = _paired_errors(metrics, model, baseline, metric, unit)
     relative = _relative_errors(model_errors, baseline_errors, clip)
@@ -1040,7 +1053,17 @@ def skill_score(
         raise ValueError(
             f"block_length={block_length} exceeds the {len(relative)} windows being resampled."
         )
-    if block_length == 1:
+    if aggregate not in ("geometric", "total"):
+        raise ValueError(f"aggregate must be 'geometric' or 'total', got {aggregate!r}.")
+    if aggregate == "total":
+        skill, ci_low, ci_high = _total_bootstrap(
+            model_errors,
+            baseline_errors,
+            block_length=block_length,
+            n_resamples=n_resamples,
+            seed=seed,
+        )
+    elif block_length == 1:
         skill, ci_low, ci_high = bootstrap(
             relative[:, None], statistic=_skill, n_resamples=n_resamples, seed=seed
         )
@@ -1071,14 +1094,42 @@ def _block_bootstrap(
     circular variant, so every window is equally likely to be drawn) and keeps the first ``n``
     values. Same return shape as ``fev.analysis.bootstrap`` for one model.
     """
-    n_windows = len(relative)
+    indices = _block_indices(len(relative), block_length, n_resamples, seed)
+    resampled = _skill(relative[indices].T)
+    point = _skill(relative[:, None])
+    lower = np.quantile(resampled, 0.5 * alpha, keepdims=True)
+    upper = np.quantile(resampled, 1 - 0.5 * alpha, keepdims=True)
+    return point, lower, upper
+
+
+def _block_indices(n_windows: int, block_length: int, n_resamples: int, seed: int) -> np.ndarray:
+    """Window positions of every resample, one row each: runs of ``block_length`` windows."""
     rng = np.random.default_rng(seed=seed)
     n_blocks = -(-n_windows // block_length)
     starts = rng.integers(0, n_windows, size=(n_resamples, n_blocks))
     indices = (starts[:, :, None] + np.arange(block_length)) % n_windows
-    indices = indices.reshape(n_resamples, -1)[:, :n_windows]
-    resampled = _skill(relative[indices].T)
-    point = _skill(relative[:, None])
+    return indices.reshape(n_resamples, -1)[:, :n_windows]
+
+
+def _total_bootstrap(
+    model_errors: np.ndarray,
+    baseline_errors: np.ndarray,
+    *,
+    block_length: int,
+    n_resamples: int,
+    seed: int,
+    alpha: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Point estimate and interval of ``1 - sum(model) / sum(baseline)``, resampling windows.
+
+    The same resamples as :func:`_block_bootstrap` (independent windows when ``block_length``
+    is 1), with both models read on the same resampled windows so the comparison stays paired.
+    """
+    if not baseline_errors.sum() > 0:
+        raise ValueError("The baseline's total error is zero: the total skill is undefined.")
+    indices = _block_indices(len(model_errors), block_length, n_resamples, seed)
+    resampled = _total_skill(model_errors[indices].T, baseline_errors[indices].T)
+    point = _total_skill(model_errors[:, None], baseline_errors[:, None])
     lower = np.quantile(resampled, 0.5 * alpha, keepdims=True)
     upper = np.quantile(resampled, 1 - 0.5 * alpha, keepdims=True)
     return point, lower, upper
@@ -1094,29 +1145,48 @@ def skill_table(
     clip: tuple[float, float] = (0.01, 100.0),
     block_length: int = 1,
     unit: str = WINDOW_COL,
+    aggregate: Literal["geometric", "total", "both"] = "geometric",
 ) -> pd.DataFrame:
-    """:func:`skill_score` of every model in ``metrics`` (baseline included), best first."""
+    """:func:`skill_score` of every model in ``metrics`` (baseline included), best first.
+
+    ``aggregate="both"`` returns the geometric table with three more columns, ``total_skill``,
+    ``total_ci_low`` and ``total_ci_high``: the same comparison on the error of all the
+    windows together. Rows are ordered by ``skill`` in every case.
+    """
     _check_is_frame(metrics, "metrics")
     _check_columns(metrics, [MODEL_COL], "metrics")
-    scores = [
-        asdict(
-            skill_score(
-                metrics,
-                model=model,
-                baseline=baseline,
-                metric=metric,
-                n_resamples=n_resamples,
-                seed=seed,
-                clip=clip,
-                block_length=block_length,
-                unit=unit,
+    if aggregate not in ("geometric", "total", "both"):
+        raise ValueError(f"aggregate must be 'geometric', 'total' or 'both', got {aggregate!r}.")
+
+    def scores(kind: Literal["geometric", "total"]) -> pd.DataFrame:
+        rows = [
+            asdict(
+                skill_score(
+                    metrics,
+                    model=model,
+                    baseline=baseline,
+                    metric=metric,
+                    n_resamples=n_resamples,
+                    seed=seed,
+                    clip=clip,
+                    block_length=block_length,
+                    unit=unit,
+                    aggregate=kind,
+                )
             )
-        )
-        for model in sorted(metrics[MODEL_COL].unique())
-    ]
-    return pd.DataFrame(scores).sort_values(
-        "skill", ascending=False, kind="stable", ignore_index=True
-    )
+            for model in sorted(metrics[MODEL_COL].unique())
+        ]
+        return pd.DataFrame(rows)
+
+    if aggregate == "both":
+        table = scores("geometric")
+        total = scores("total")
+        table["total_skill"] = total["skill"]
+        table["total_ci_low"] = total["ci_low"]
+        table["total_ci_high"] = total["ci_high"]
+    else:
+        table = scores(aggregate)
+    return table.sort_values("skill", ascending=False, kind="stable", ignore_index=True)
 
 
 def _paired_errors(
@@ -1171,6 +1241,11 @@ def _relative_errors(
 def _skill(relative_errors: np.ndarray) -> np.ndarray:
     """Bootstrap statistic: ``1 - gmean`` over windows (axis 0), as in fev's leaderboard."""
     return 1.0 - scipy.stats.gmean(relative_errors, axis=0)
+
+
+def _total_skill(model_errors: np.ndarray, baseline_errors: np.ndarray) -> np.ndarray:
+    """Bootstrap statistic: ``1 - sum(model) / sum(baseline)`` over windows (axis 0)."""
+    return 1.0 - model_errors.sum(axis=0) / baseline_errors.sum(axis=0)
 
 
 def _win_rate(model_errors: np.ndarray, baseline_errors: np.ndarray) -> float:

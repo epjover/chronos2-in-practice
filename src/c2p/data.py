@@ -1,6 +1,6 @@
 """Load the Spanish energy dataset and get series frames ready for Chronos-2.
 
-Article 1 walks through :func:`validate_and_prepare`, a checklist that turns a messy table
+Part 1 walks through :func:`validate_and_prepare`, a checklist that turns a messy table
 into a clean *series frame* (see :mod:`c2p.schema`): timestamps in naive UTC, one row per
 series and grid step, missing values as NaN. The module also builds future frames, adds
 calendar covariates and corrupts clean data on purpose for the "messy data" demo.

@@ -1,7 +1,11 @@
-"""Article figures: one consistent matplotlib style for static PNGs published on Medium.
+"""The style every figure shares, how figures are saved, and the plots several parts reuse.
 
-Every figure in the series is drawn by a function of this module from DataFrames that follow
-the shared contract in ``c2p.schema``, then written with :func:`save_figure`::
+Three things live here: the matplotlib style of the static PNGs published on Medium
+(:func:`set_style`), :func:`save_figure`, and the plots that more than one part draws (a
+forecast fan, scenario panels, the gap grid, benchmark bars, a metric against a parameter).
+Figures that belong to one topic (the architecture diagram, the evaluation, production and
+embedding figures) are in the modules of ``c2p.plots``, which build on the helpers below.
+Every plot takes DataFrames that follow the shared contract in ``c2p.schema``::
 
     from c2p.plotting import plot_fan, save_figure, set_style
 

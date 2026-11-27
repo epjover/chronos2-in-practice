@@ -15,10 +15,10 @@ two kinds of calibration:
 
 Protocol, chosen so that nothing here could have seen 2018 before forecasting it:
 
-1. **Calibrate** on the second half of 2017 (the period article 4 used for early stopping),
+1. **Calibrate** on the second half of 2017 (the period Part 4 used for early stopping),
    with the same day-ahead windows (24 h, cutoff 22:00 UTC, 2,048 h of context): 184 windows,
    4,416 hours of misses per quantile pair and horizon step.
-2. **Evaluate** on article 2's 365 windows of 2018, zero-shot against the four calibrated
+2. **Evaluate** on Part 2's 365 windows of 2018, zero-shot against the four calibrated
    variants, through the same harness and the same metrics. The adaptive variants only ever
    use the actuals already in the context of each window. Their two settings (56 forecasts,
    and a step of 0.005 per observed hour, the value of the paper) were fixed before the run
@@ -91,9 +91,23 @@ def summarise(metrics: pd.DataFrame, *, baseline: str = "zero-shot") -> pd.DataF
         )
         .reset_index()
     )
-    skill = skill_table(metrics, baseline=baseline, metric="WQL", block_length=DAY_AHEAD_BLOCK)
+    skill = skill_table(
+        metrics, baseline=baseline, metric="WQL", block_length=DAY_AHEAD_BLOCK, aggregate="both"
+    )
     summary = summary.merge(
-        skill[[MODEL_COL, "skill", "ci_low", "ci_high", "win_rate"]], on=MODEL_COL
+        skill[
+            [
+                MODEL_COL,
+                "skill",
+                "ci_low",
+                "ci_high",
+                "win_rate",
+                "total_skill",
+                "total_ci_low",
+                "total_ci_high",
+            ]
+        ],
+        on=MODEL_COL,
     )
     reference = metrics.loc[metrics[MODEL_COL] == baseline].set_index("cutoff")["WQL"]
     worst = reference.index[reference >= reference.quantile(1 - WORST_SHARE)]

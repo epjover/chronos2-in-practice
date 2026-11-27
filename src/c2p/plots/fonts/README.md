@@ -6,6 +6,6 @@
 
 The file is the unmodified Regular weight (SHA-256
 `cc7066e237cba41c2cb8163eb305553d79a0e60967de59cd38833e5bf841f82a`). It is used only by
-`c2p.plots.architecture`, so the architecture diagram of article 1 looks like an Excalidraw
+`c2p.plots.architecture`, so the architecture diagram of Part 1 looks like an Excalidraw
 sketch while staying reproducible from code. Every other figure of the series uses the system
 sans-serif stack of `c2p.plotting`.

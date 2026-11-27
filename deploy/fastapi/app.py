@@ -364,7 +364,7 @@ def request_to_frame(request: ForecastRequest) -> pd.DataFrame:
 def prepare_context(
     request: ForecastRequest, *, max_context: int
 ) -> tuple[pd.DataFrame, DataReport]:
-    """Run the article-1 data checklist on the request; raise ``InvalidInputError`` on bad data."""
+    """Run the data checklist of Part 1 on the request; raise ``InvalidInputError`` on bad data."""
     try:
         return validate_and_prepare(
             request_to_frame(request),

@@ -1,6 +1,6 @@
 r"""Latency and throughput of Chronos-2 against batch size, context length and checkpoint.
 
-Article 5 needs two numbers an accuracy benchmark never reports: how long one ``predict`` call
+Part 5 needs two numbers an accuracy benchmark never reports: how long one ``predict`` call
 takes, and how many series per second a machine sustains. Both depend on three things the caller
 controls (how many series go in one call, how much context each carries, and which checkpoint is
 loaded), so this script sweeps all three and writes one row per combination.

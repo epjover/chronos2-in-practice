@@ -1,6 +1,6 @@
 # Chronos-2 through AutoGluon Cloud
 
-The third deployment path of article 5, and the one with the least code: no Dockerfile, no
+The third deployment path of Part 5, and the one with the least code: no Dockerfile, no
 `model_fn`, no training job. `TimeSeriesFoundationModel` wraps the pretrained checkpoint and
 `deploy_timeseries.py` exposes the three shapes a forecasting workload takes.
 
@@ -16,7 +16,7 @@ The third deployment path of article 5, and the one with the least code: no Dock
 
 > **Status: written against the documented API, never run against an AWS account.** The
 > script has not created a job or an endpoint, so treat it as a starting point and expect to
-> adjust it. The costs in article 5 do not depend on it: they come from throughput measured
+> adjust it. The costs in Part 5 do not depend on it: they come from throughput measured
 > locally and the published rates in `data/reference/cloud_prices.csv`.
 
 ## Prerequisites
@@ -70,11 +70,11 @@ batch outputs) stays there; remove it with `aws s3 rm --recursive s3://my-bucket
 - **Serverless needs the weights in S3.** A serverless container starts without access to the
   Hugging Face Hub, so the script calls `cache_model_artifact` first (or reuses
   `--model-artifact-uri`). It runs on CPU and the first call after a quiet period pays a cold
-  start: article 5 prices that trade.
+  start: Part 5 prices that trade.
 - **The request format is AutoGluon's**, not the JSON that `deploy/fastapi` and
   `deploy/sagemaker` share, so a client written against one does not work against this one.
   That is the cost of the managed path; the saving is that there is no handler, no image and
   no endpoint wiring to maintain.
 - **No fine-tuning here.** This script serves the pretrained checkpoint. Fine-tuning through
   AutoGluon goes through `TimeSeriesPredictor` with `hyperparameters={"Chronos2": {...}}`,
-  which article 4 describes next to the notebooks that do it with the library directly.
+  which Part 4 describes next to the notebooks that do it with the library directly.

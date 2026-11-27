@@ -2,7 +2,7 @@
 
 ``bench_cpu_gpu.py`` measures how much faster the 28M-parameter checkpoint is, and how much
 faster the full model runs in half precision. Speed is only half of a trade, so this script
-measures the other half with the protocol of article 2 (365 day-ahead windows over 2018,
+measures the other half with the protocol of Part 2 (365 day-ahead windows over 2018,
 24-hour horizon, 2,048 hours of context, 11 quantiles) and reports the skill of each cheaper
 variant against the full model in single precision, with a block-bootstrap interval over
 windows:
@@ -77,13 +77,16 @@ def main() -> int:
     metrics = pd.concat(frames, ignore_index=True)
     print("Saved", save_results(metrics, "bench_variants_metrics", paths).name)
 
-    skill = skill_table(metrics, baseline=BASELINE, metric="WQL", block_length=DAY_AHEAD_BLOCK)
+    skill = skill_table(
+        metrics, baseline=BASELINE, metric="WQL", block_length=DAY_AHEAD_BLOCK, aggregate="both"
+    )
     print("Saved", save_results(skill, "bench_variants_skill", paths).name)
     for row in skill[skill["model"] != BASELINE].itertuples():
         print(
             f"{row.model} vs {BASELINE}: skill {row.skill:+.2%} "
             f"[{row.ci_low:+.2%}, {row.ci_high:+.2%}], wins {row.win_rate:.1%} "
-            f"of {int(row.n_units)} windows"
+            f"of {int(row.n_units)} windows; on the total error {row.total_skill:+.2%} "
+            f"[{row.total_ci_low:+.2%}, {row.total_ci_high:+.2%}]"
         )
     return 0
 

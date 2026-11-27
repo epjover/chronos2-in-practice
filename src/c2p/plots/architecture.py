@@ -1,4 +1,4 @@
-"""Schematic of how Chronos-2 turns a group of series into quantile forecasts (article 1).
+"""Schematic of how Chronos-2 turns a group of series into quantile forecasts (Part 1).
 
 Unlike every other figure of the series, this one draws a *description*, not a measurement: the
 stages come from the Chronos-2 technical report (Ansari et al., 2025,

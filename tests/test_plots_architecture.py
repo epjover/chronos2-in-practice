@@ -1,4 +1,4 @@
-"""Tests for the Chronos-2 architecture diagram of article 1.
+"""Tests for the Chronos-2 architecture diagram of Part 1.
 
 The diagram describes the model, so the tests check two things: that it draws, and that every
 size it prints comes from its ``Chronos2Sizes`` argument rather than from text frozen in the

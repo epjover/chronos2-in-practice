@@ -178,8 +178,9 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── conformal.py        # conformal calibration of the intervals, static and adaptive
 │   ├── aggregate.py        # hourly forecasts into daily totals, and what that assumes
 │   ├── embeddings.py       # the encoder's embeddings: analogs, probes, anomaly scores
-│   ├── plotting.py         # article figures
-│   ├── plots/              # figures specific to one article (architecture and decision path,
+│   ├── plotting.py         # the shared figure style, save_figure, and the plots several
+│   │                       #   parts reuse (forecast fan, scenarios, gap grid, benchmarks)
+│   ├── plots/              # figures of one topic each (architecture and decision path,
 │   │                       #   evaluation, production, embeddings)
 │   │   └── fonts/          # Excalifont (OFL 1.1), for the hand-drawn architecture diagram
 │   └── results.py          # saving and loading experiment CSV files
@@ -232,7 +233,7 @@ The decision path that closes part 7 follows the same rule: `scripts/series_summ
 the sentence under each step from the results files, so the figure cannot quote a number the
 experiments no longer support.
 
-The one figure that shows no measurement is the architecture diagram of article 1
+The one figure that shows no measurement is the architecture diagram of Part 1
 (`c2p.plots.architecture`): it describes the model. Even there the sizes it prints are read from
 the loaded checkpoint with `chronos2_sizes(pipeline)`, so the drawing cannot disagree with the
 weights, and a slow test asserts that `amazon/chronos-2` still matches the published defaults.

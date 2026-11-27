@@ -1,6 +1,6 @@
 """Load a published fev-bench task and restate it in this repository's own protocol.
 
-Article 3 replicates the EPF-DE task of fev-bench (German day-ahead electricity price with the
+Part 3 replicates the EPF-DE task of fev-bench (German day-ahead electricity price with the
 grid operator's load and renewable forecasts as known covariates) before applying the same
 design to Spanish prices. Replicating it means using the *published* task definition rather than
 a similar-looking one of our own, so this module does two things:
@@ -130,7 +130,7 @@ def task_backtest_config(
     ----------
     with_covariates
         Declare the task's known dynamic columns as known covariates. ``False`` gives the same
-        task without them, which is the ablation article 3 is built on.
+        task without them, which is the ablation Part 3 is built on.
     n_windows
         Use fewer windows than the task defines (for a fast smoke run). The cutoffs then no
         longer match the published ones, so :func:`assert_cutoffs_match` will refuse them.

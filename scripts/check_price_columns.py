@@ -1,7 +1,7 @@
 """Identify the two price columns of the Spanish dataset against OMIE's published prices.
 
 The Kaggle table has ``price actual`` and ``price day ahead`` and describes the second as a
-forecast. Article 3 forecasts the first, so what each column is decides how to read the result.
+forecast. Part 3 forecasts the first, so what each column is decides how to read the result.
 OMIE, the Iberian market operator, publishes the hourly marginal price of the day-ahead market;
 this script downloads its file for one year, puts it on the dataset's UTC grid and measures how
 each column relates to it.

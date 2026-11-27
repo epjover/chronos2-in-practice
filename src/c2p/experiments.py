@@ -2,7 +2,7 @@
 
 The test period is 2018, the last year of the Spanish dataset. Day-ahead windows forecast the
 next 24 hours from 22:00 UTC (23:00 in Madrid in winter), one window per day. Data before 2018
-is history: fine-tuning (article 4) trains on data up to :data:`TRAIN_END` and validates on
+is history: fine-tuning (Part 4) trains on data up to :data:`TRAIN_END` and validates on
 the second half of 2017, so the 2018 test windows are never seen during training.
 """
 
@@ -19,7 +19,7 @@ WEEKLY_SEASON = 168
 LOAD = "load_actual"
 PRICE = "price_actual"
 # The grid operator's (TSO) day-ahead forecasts, published the day before: known-future
-# covariates for horizons up to 24 hours (article 3).
+# covariates for horizons up to 24 hours (Part 3).
 TSO_LOAD_FORECAST = "load_forecast_tso"
 TSO_COVARIATES: tuple[str, ...] = (
     TSO_LOAD_FORECAST,

@@ -9,23 +9,23 @@ read of seven articles:
 
 What happens, in the order of the series:
 
-1. **Checklist** (article 1): columns are renamed to the ``item_id`` / ``timestamp`` schema,
+1. **Checklist** (Part 1): columns are renamed to the ``item_id`` / ``timestamp`` schema,
    timestamps become naive UTC, sentinels become NaN, duplicates are resolved, every series is
    put on a regular grid, and the report says what was found. Nothing is imputed.
-2. **Zero-shot forecast** (article 1): Chronos-2 forecasts ``--horizon`` steps for every series
+2. **Zero-shot forecast** (Part 1): Chronos-2 forecasts ``--horizon`` steps for every series
    at the requested quantiles, and the forecast is written next to your CSV with a fan chart
    of the first series.
-3. **Backtest** (article 2, optional): with ``--backtest N``, the last ``N`` horizons of your
+3. **Backtest** (Part 2, optional): with ``--backtest N``, the last ``N`` horizons of your
    data are replayed as rolling-origin windows against a seasonal naive baseline, and the skill
    score with its bootstrap interval tells you whether the model beats the obvious baseline on
    your series. Needs at least ``N + 1`` horizons of history per series.
 
-Known-future covariates (article 3) are supported through ``--known``: name the columns you
+Known-future covariates (Part 3) are supported through ``--known``: name the columns you
 will genuinely have for the horizon; for the zero-shot forecast they are read from the rows of
 your CSV that lie beyond the last target value, so append those rows (target left empty) before
 running.
 
-A fine-tuned checkpoint from article 4 drops in with ``--model path/to/checkpoint``.
+A fine-tuned checkpoint from Part 4 drops in with ``--model path/to/checkpoint``.
 """
 
 from __future__ import annotations

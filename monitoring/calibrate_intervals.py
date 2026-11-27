@@ -68,6 +68,7 @@ ROLLING_WINDOW = 56  # forecasts in the rolling pool: eight weeks of day-ahead r
 ACI_GAMMA = 0.005 * 24
 
 
+MIN_MONTH_HOURS = 12  # scored hours below which a month is left out of the monthly table
 WORST_SHARE = 0.10  # the tail of zero-shot windows a reserve-margin decision cares about
 FIGURE_TITLE = "80% band by month of 2018: zero-shot, static and adaptive calibration"
 FIGURE_MODELS = ("zero-shot", "conformal_additive", "conformal_rolling", "conformal_aci")
@@ -206,8 +207,9 @@ def main(argv: list[str] | None = None) -> int:
     all_forecasts = pd.concat(forecasts, ignore_index=True)
     by_month = coverage_by_period(all_forecasts, lower=0.1, upper=0.9, period="M")
     # The first window's horizon starts at 23:00 UTC on 31 December 2017: one hour of a month
-    # that is otherwise not in the test year. A month needs at least a week of hours to count.
-    by_month = by_month[by_month["n"] >= 24 * 7].reset_index(drop=True)
+    # that is otherwise not in the test year. A month needs at least half a day of hours to
+    # count (fast mode scores one day per month, so a higher bar would leave no month at all).
+    by_month = by_month[by_month["n"] >= MIN_MONTH_HOURS].reset_index(drop=True)
     print("Saved", save_results(by_month, "09_conformal_by_month", paths).name)
     report(metrics, by_month, paths)
     return 0

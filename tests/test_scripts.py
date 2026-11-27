@@ -122,6 +122,32 @@ def test_calibrate_intervals_rebuilds_its_summary_from_saved_results(project):
     assert (project.figures / "09_conformal_coverage.png").is_file()
 
 
+def test_calibrate_intervals_runs_end_to_end_with_a_stand_in_model(project, monkeypatch):
+    monkeypatch.setenv("C2P_FAST_MODE", "1")
+    script = load_script("monitoring/calibrate_intervals.py")
+    monkeypatch.setattr(script, "spain_energy_frame", lambda: synthetic_load(days=900))
+    monkeypatch.setattr(script, "load_chronos2", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        script,
+        "Chronos2Forecaster",
+        lambda pipeline, name="chronos-2": SeasonalNaive(season_length=24, name=name),
+    )
+    assert script.main([]) == 0
+    results = get_paths(fast_mode=True).results
+    adjustments = pd.read_csv(results / "09_conformal_adjustments.csv")
+    assert set(adjustments["mode"]) == {"additive", "scaled"}
+    metrics = pd.read_csv(results / "09_conformal_metrics.csv")
+    models = {"zero-shot", "conformal_additive", "conformal_scaled"}
+    models |= {"conformal_rolling", "conformal_aci"}
+    assert set(metrics["model"]) == models
+    windows = metrics.groupby("model").size()
+    assert (windows == windows.iloc[0]).all()  # every variant scored on every window
+    by_month = pd.read_csv(results / "09_conformal_by_month.csv")
+    assert (by_month["n"] >= script.MIN_MONTH_HOURS).all() and by_month["period"].nunique() > 6
+    summary = pd.read_csv(results / "09_conformal_summary.csv").set_index("model")
+    assert summary.loc["zero-shot", "skill"] == 0.0
+
+
 # --- the price fetcher, offline ---------------------------------------------------------------
 
 
@@ -205,6 +231,7 @@ def test_cheaper_variants_compares_against_the_full_model(project, monkeypatch):
 SUMMARY_INPUTS = (
     "00_messy_data_summary",
     "02_skill_table",
+    "02_head_to_head",
     "03_context_sweep",
     "05_epf_de_skill",
     "05_price_ladder_skill",
@@ -219,6 +246,21 @@ SUMMARY_INPUTS = (
     "09_monitoring_rolling",
     "10_paired_skill",
     "11_anomaly_auc",
+    # the per-window (or per-store) errors behind every comparison of 12_two_readings
+    "02_backtest_metrics",
+    "02_synth_metrics",
+    "05_epf_de_metrics",
+    "05_price_ladder_metrics",
+    "05_operator_metrics",
+    "07_budget_validation_metrics",
+    "07_budget_test_metrics",
+    "08_comparison_metrics",
+    "08_forgetting_metrics",
+    "bench_variants_metrics",
+    "09_conformal_metrics",
+    "10_daily_total_metrics",
+    "10_week_ahead_metrics",
+    "10_panel_store_errors",
 )
 
 
@@ -229,10 +271,53 @@ def test_series_summary_builds_the_page_and_the_path_from_the_committed_results(
     table = pd.read_csv(project.results / "12_series_summary.csv")
     assert list(table.columns) == script.SUMMARY_COLUMNS
     assert set(table["part"]) == {f"Part {n}" for n in range(1, 8)}
-    assert table.notna().all().all() and not table["effect"].str.contains("nan").any()
+    # "n/a" is how the table marks a row that is not a comparison; pandas reads it back as NaN.
+    assert table.drop(columns="total").notna().all().all()
+    assert not table["effect"].str.contains("nan").any()
     path = pd.read_csv(project.results / "12_decision_path.csv")
     assert len(path) == 8 and path["measured"].str.len().min() > 20
     assert (project.figures / "12_decision_path.png").is_file()
+    comparisons = table["total"].notna()
+    assert comparisons.sum() == 11 and table.loc[comparisons, "total"].str.contains("%").all()
+    assert script.NOT_A_COMPARISON == "n/a"
+
+
+def test_two_readings_repeat_the_skills_the_notebooks_saved(project):
+    """The typical-window column must be the number each notebook published for the same pair."""
+    copy_results(project, *SUMMARY_INPUTS)
+    script = load_script("scripts/series_summary.py")
+    readings = script.two_readings(project).set_index(["metrics", "model", "baseline"])
+    assert len(readings) == len(script.COMPARISONS)
+    assert readings.notna().all().all()
+    published = {
+        ("02_backtest_metrics", "chronos-2", "seasonal_naive"): ("02_skill_table", "chronos-2"),
+        ("05_epf_de_metrics", "known_future", "univariate"): ("05_epf_de_skill", "known_future"),
+        ("08_comparison_metrics", "lora_tuned", "zero-shot"): ("08_comparison_skill", "lora_tuned"),
+        ("bench_variants_metrics", "chronos-2-small", "chronos-2"): (
+            "bench_variants_skill",
+            "chronos-2-small",
+        ),
+    }
+    for key, (name, model) in published.items():
+        saved = pd.read_csv(project.results / f"{name}.csv").set_index("model").loc[model]
+        for column in ("skill", "ci_low", "ci_high"):
+            assert readings.loc[key, column] == pytest.approx(saved[column], abs=1e-9), (
+                key,
+                column,
+            )
+    paired = pd.read_csv(project.results / "10_paired_skill.csv").set_index(["model", "baseline"])
+    for model, baseline in (
+        ("hourly quantiles, summed", "daily series, forecast directly"),
+        ("+known covariates", "history only"),
+    ):
+        key = next(k for k in readings.index if k[1:] == (model, baseline))
+        saved = paired.loc[(model, baseline)]
+        assert readings.loc[key, "skill"] == pytest.approx(saved["skill"], abs=1e-9)
+        assert readings.loc[key, "n_units"] == saved["n_units"]
+        assert readings.loc[key, "total_skill"] == pytest.approx(saved["total_skill"], abs=1e-9)
+    # A constant ratio in every window reads the same both ways; a heavy tail does not.
+    bolt = readings.loc[("02_backtest_metrics", "chronos-2", "chronos-bolt")]
+    assert bolt["skill"] > 0 > bolt["total_skill"]
 
 
 def test_series_summary_names_the_missing_results_file(project):
@@ -246,5 +331,15 @@ def test_series_summary_rounds_half_up_with_a_true_minus():
     script = load_script("scripts/series_summary.py")
     assert script.half_up(0.25, 1) == "0.3" and script.pct(0.6386) == "63.9%"
     assert script.signed(-0.0025) == "\u22120.3" and script.signed(0.018) == "+1.8"
-    row = pd.Series({"skill": 0.109, "ci_low": 0.062, "ci_high": 0.151})
+    row = pd.Series(
+        {
+            "skill": 0.109,
+            "ci_low": 0.062,
+            "ci_high": 0.151,
+            "total_skill": -0.131,
+            "total_ci_low": -0.213,
+            "total_ci_high": -0.053,
+        }
+    )
     assert script.interval(row) == "+10.9% [+6.2, +15.1]"
+    assert script.interval(row, prefix="total_") == "\u221213.1% [\u221221.3, \u22125.3]"

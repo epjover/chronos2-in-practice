@@ -113,3 +113,19 @@ def test_load_part_urls_ignores_empty_and_rejects_non_https(tmp_path: Path) -> N
     (articles / rat.PART_URLS_FILE).write_text('{"1": "medium.com/p/1"}')
     with pytest.raises(ValueError, match="https://"):
         rat.load_part_urls(tmp_path)
+
+
+def test_convert_article_removes_the_images_of_tables_that_are_gone(tmp_path: Path) -> None:
+    source = tmp_path / "articles" / "07-test-article.md"
+    source.parent.mkdir()
+    source.write_text(ARTICLE, encoding="utf-8")
+    out_dir = tmp_path / "articles" / "medium"
+    tables = out_dir / "tables"
+    tables.mkdir(parents=True)
+    stale, other_part = tables / "07_table_3.png", tables / "06_table_3.png"
+    stale.write_bytes(b"left over from a table the draft no longer has")
+    other_part.write_bytes(b"another part's table")
+    rat.convert_article(source, out_dir)
+    assert not stale.exists()
+    assert other_part.exists()
+    assert sorted(p.name for p in tables.glob("07_*")) == ["07_table_1.png", "07_table_2.png"]

@@ -1,4 +1,4 @@
-"""Tests for the pure parts of ``bench/bench_cpu_gpu.py`` (no model, no timing)."""
+"""Tests of ``bench/bench_cpu_gpu.py`` with a stand-in pipeline (no model is downloaded)."""
 
 from __future__ import annotations
 
@@ -87,3 +87,45 @@ def test_tile_series_copies_the_tail_with_distinct_ids() -> None:
     assert tiled[bench.LOAD].tolist()[:4] == [6.0, 7.0, 8.0, 9.0]
     with pytest.raises(ValueError, match="fewer than the requested context"):
         bench.tile_series(series, n_series=1, context_length=11)
+
+
+class InstantPipeline:
+    """Stands in for a Chronos-2 pipeline: accepts the call and returns at once."""
+
+    def predict_df(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def hourly_load(hours: int = 600) -> pd.DataFrame:
+    stamps = pd.date_range("2018-01-01", periods=hours, freq="h")
+    values = 100.0 + np.sin(np.arange(hours) / 24.0)
+    return pd.DataFrame({ID_COL: "spain", TIMESTAMP_COL: stamps, bench.LOAD: values})
+
+
+def test_main_writes_one_row_per_cell_and_one_per_timed_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("C2P_ROOT", str(tmp_path))
+    monkeypatch.setattr(bench, "spain_energy_frame", hourly_load)
+    monkeypatch.setattr(bench, "load_chronos2", lambda *args, **kwargs: InstantPipeline())
+    monkeypatch.setattr(bench, "parameter_count", lambda pipeline: 119_500_000)
+    assert bench.main(["--fast", "--models", "stand-in", "--threads", "1"]) == 0
+
+    cells = pd.read_csv(tmp_path / "results" / "bench_latency.csv")
+    samples = pd.read_csv(tmp_path / "results" / "bench_latency_samples.csv")
+    assert len(cells) == len(bench.FAST_BATCHES) * len(bench.FAST_CONTEXTS)
+    assert len(samples) == 3 * len(cells)  # --fast times three calls per cell
+    assert cells["model"].eq("stand-in").all() and cells["device"].eq("cpu").all()
+    assert cells["params_m"].eq(119.5).all()
+    assert cells["peak_vram_mb"].isna().all()  # no GPU memory to report on a CPU
+    assert np.allclose(cells["series_per_second"], cells["batch_size"] / cells["seconds_median"])
+    # the slow tail of the calls is the low end of the throughput, and the other way round
+    assert (cells["series_per_second_p05"] <= cells["series_per_second"]).all()
+    assert (cells["series_per_second"] <= cells["series_per_second_p95"]).all()
+    assert "Saved" in capsys.readouterr().out
+
+
+def test_main_refuses_a_gpu_run_without_a_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bench.torch.cuda, "is_available", lambda: False)
+    with pytest.raises(SystemExit):
+        bench.main(["--device", "cuda"])

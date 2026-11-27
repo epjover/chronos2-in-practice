@@ -39,6 +39,7 @@ from c2p.config import GITHUB_REPO, find_repo_root
 URL_RE = re.compile(r"https?://[^\s)>\]]+")
 REPO_RE = re.compile(rf"https://github\.com/{re.escape(GITHUB_REPO)}(?:/(blob|tree)/main/(.*))?$")
 REFUSED = {401, 403, 429}
+ACCEPTED = 202
 TIMEOUT_S = 30
 # A page that certainly exists, per host that hides every page from scripts behind an error.
 HOST_CONTROLS = {"www.kaggle.com": "https://www.kaggle.com/datasets/uciml/iris"}
@@ -117,6 +118,9 @@ def check_url(url: str, articles: set[str], root: Path) -> LinkResult:
     except requests.RequestException as error:
         return LinkResult(url, cited, "broken", type(error).__name__, "", str(error)[:90])
     status = response.status_code
+    if status == ACCEPTED and not response.text.strip():
+        # "Accepted", with no page: what EUR-Lex answers to a script while a browser gets the text.
+        return LinkResult(url, cited, "refused", f"{status} with an empty body", "", "")
     verdict = "ok" if status < 400 else "refused" if status in REFUSED else "broken"
     if verdict == "broken" and same_failure_on_control(url, status):
         return LinkResult(url, cited, "refused", f"{status} for any page", "", "")

@@ -18,6 +18,7 @@ step. Without it, "we replicated EPF-DE" would be an assertion rather than a tes
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -66,29 +67,46 @@ def load_fev_task(dataset_config: str = EPF_DE, *, tasks_url: str = FEV_BENCH_TA
     return task
 
 
-def task_series_frame(task: fev.Task) -> pd.DataFrame:
+def task_series_frame(task: fev.Task, static_columns: Sequence[str] = ()) -> pd.DataFrame:
     """Flatten a fev task's dataset into a series frame (see :mod:`c2p.schema`).
 
     One row per (series, timestamp), with the task's target and every dynamic column it
     declares. Numeric columns become ``float64``; a dynamic column of strings (a holiday type,
     a promotion code) becomes a ``category``, which is how Chronos-2 is told to treat it as
-    categorical. Static columns are dropped: Chronos-2 takes covariates as series, and a
-    constant per series carries no information for a single-series task.
+    categorical.
+
+    Static attributes (one value per series: a store type, a region) are dropped unless they
+    are named in ``static_columns``. Chronos-2 has no input for them: it takes covariates as
+    series, so the only way in is a column that repeats the value at every timestamp, which is
+    what ``static_columns`` builds. Whether such a column can tell the model anything is a
+    question to measure, not to assume (notebook 10 does).
     """
     dataset = task.load_full_dataset()
+    static_columns = list(static_columns)
     columns = [task.target, *task.known_dynamic_columns, *task.past_dynamic_columns]
     frames = []
     for record in dataset:
         timestamps = pd.DatetimeIndex(record[task.timestamp_column]).tz_localize(None)
-        values = {column: _dynamic_values(record[column]) for column in columns}
+        values: dict[str, object] = {column: _dynamic_values(record[column]) for column in columns}
+        if missing := [column for column in static_columns if column not in record]:
+            raise ValueError(f"The task's dataset has no static columns {missing}.")
+        values.update({column: _static_value(record[column]) for column in static_columns})
         frames.append(
             pd.DataFrame({ID_COL: str(record[task.id_column]), TIMESTAMP_COL: timestamps, **values})
         )
     frame = pd.concat(frames, ignore_index=True)
+    columns = [*columns, *static_columns]
     for column in columns:
         if not pd.api.types.is_numeric_dtype(frame[column]):
             frame[column] = frame[column].astype("category")
     return frame.sort_values([ID_COL, TIMESTAMP_COL], kind="stable", ignore_index=True)
+
+
+def _static_value(value: object) -> float | str:
+    """One static attribute as a float, or as text when it is not a number (None included)."""
+    if isinstance(value, bool | int | float | np.number):
+        return float(value)
+    return "missing" if value is None else str(value)
 
 
 def _dynamic_values(values: object) -> np.ndarray:

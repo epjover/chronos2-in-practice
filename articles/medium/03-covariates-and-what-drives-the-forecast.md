@@ -11,8 +11,9 @@ Knowing only their history takes off 11%. The gap is the whole story.**
 ---
 
 [Part 2](#) established a number to beat and a protocol to beat it with, and it ended on a result
-that needed explaining. On a clean univariate series, Chronos-2 and the older Chronos-Bolt came out
-tied within the error bars. The Chronos-2 paper's own benchmark tables say where the difference
+that needed explaining. On a clean univariate series, Chronos-2 and the older Chronos-Bolt could
+not be told apart on a typical day, and Bolt had the lower error over the year. The Chronos-2
+paper's own benchmark tables say where the difference
 should show up (covariate tasks, by a wide margin: section 5.2 and Figure 4 of [1]), so that's
 where this claim gets tested rather than just taken at its word.
 
@@ -37,7 +38,8 @@ foundation model does and does not do with a nearly perfect input.
 
 > **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
 > series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
-> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window. **Total**
+> is the same comparison on the summed error of all the windows, where the bad days weigh more.
 > **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
 > **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
 > over windows.
@@ -113,8 +115,9 @@ nobody can check, including you.
 
 A second check comes from outside the repository. `Chronos2Pipeline.predict_fev(task)` is the
 library's own route to a fev task, and `task.evaluation_summary` scores its predictions with fev's
-code, so none of this repository's harness takes part. Its four numbers (SQL 0.4911, WQL 0.2407,
-MASE 0.6042, WAPE 0.2910) are the ones of the `known_future` row below, to the sixth decimal
+code, so none of this repository's harness takes part. Its WQL, 0.2407, is the one of the
+`known_future` row below, and the three other metrics fev reports for the task (the scaled
+quantile loss its leaderboard ranks on, MASE and WAPE) match the harness to the sixth decimal too
 ([`05_epf_de_fev_check.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/05_epf_de_fev_check.csv)).
 
 Three arms keep apart two effects that are easy to mix up:
@@ -128,19 +131,25 @@ Three arms keep apart two effects that are easy to mix up:
 *Figure 1. EPF-DE: the covariates' history against their future, scored on the task's own 20
 windows.*
 
-The skill column is Part 2's: one minus the geometric mean of the per-window WQL ratios. It need
-not equal the ratio of the two mean WQLs printed beside it, because a mean is dominated by the
-worst windows and the skill weighs every window equally.
+The skill column is Part 2's skill on a typical window. Part 2 also asked for the same comparison
+on the error of all the windows together, and here the two readings agree: divide the WQL cells
+and the loss falls by 50.6% with the covariates' future and by 12.0% with their history.
+Twenty windows are a small sample, which is why the interval on the 49.5% runs from 37 to 59.
+The direction is not in doubt (19 windows of 20); the size is known to within some ten points
+either way.
 
-**Knowing the future is roughly four and a half times as valuable as knowing the history.** If most of the gain had shown up in `past_only`, covariates would just be extra context,
+**The value of these covariates is in their future: on a typical window, 49.5% with it against 11.0% with their history alone.** If most of the gain had shown up in `past_only`, covariates would just be extra context,
 and you could stop worrying about forecast availability. It didn't turn out that way, and that
 changes the engineering work. You're no longer asking "which series correlate with my target" but
 "which series do I have a trustworthy forward view of".
 
-One more number that does not usually get reported: coverage of the 80% interval improves along with
-accuracy, going 71.5%, then 76.3%, then 84.4%. The covariates do not just shrink the error; they
-also make the model's own uncertainty more reliable. Part 2 found Chronos-2's bands too narrow on
-Spanish load, and this is the first thing in the series that moves them in the right direction.
+One more number that does not usually get reported: on this task the coverage of the 80% interval
+moves with accuracy, from 71.5% to 76.3% to 84.4% (`05_epf_de_metrics.csv`). Do not read that
+as a rule. Section 6 has a
+covariate that cuts the error by three quarters and makes the coverage worse.
+
+Part 1 warned that Chronos-2 learned to use covariates from synthetic data alone. On a real
+market, with real published forecasts, the lesson transferred.
 
 ## 3. The same design on Spanish prices
 
@@ -151,16 +160,15 @@ same weekly-block intervals.
 
 **Which price is this?** The dataset has two price columns and documents neither, so the
 repository checks them against the market operator's own files (`scripts/check_price_columns.py`,
-on OMIE's hourly day-ahead prices for 2018 [9]). `price actual`, the target here, is not the
-day-ahead market price: it runs a steady 6.1 EUR/MWh above it (standard deviation 1.8) with a
-correlation of 0.990, which is what the final price looks like once the costs of the later markets
-and system services are added to the day-ahead result. Forecasting it one day ahead is, to within
-that nearly constant premium, the day-ahead price forecasting problem, and that is how to read
-this section. The other column, `price day ahead`, sounds like the natural baseline or covariate
-and is neither: it matches OMIE's price to the cent on 233 days of 2018 and on no hour at all of
-another 130. It is not used anywhere in this series.
+on OMIE's hourly day-ahead prices for 2018 [9]). `price actual`, the target here, runs a steady
+6.1 EUR/MWh above the day-ahead market price (standard deviation 1.8, correlation 0.990): it is
+the final price, the auction result plus the costs of the later markets and system services, and
+forecasting it one day ahead is the day-ahead price problem to within that premium. The other
+column, `price day ahead`, matches OMIE's price to the cent on 233 days of 2018, on no hour at
+all of another 130 and on some hours of the other two, and is not used anywhere in this series.
 
-The ladder adds one kind of information at a time, so you can attribute each rung to its own cause.
+The ladder adds one kind of information at a time, so you can attribute each rung to its own
+cause. Each row contains the one above it, except the last, which takes the calendar back out.
 
 ![Figure 2: results/figures/05_covariate_ladder.png](../../results/figures/05_covariate_ladder.png)
 
@@ -169,43 +177,42 @@ windows. The two leak arms of section 4 are left out of the chart.*
 
 ![Table 2: articles/medium/tables/03_table_2.png](tables/03_table_2.png)
 
-*Table 2. Columns: Rung, WQL, Skill vs none, Wins.*
+*Table 2. Columns: Rung, WQL, Skill vs none, typical window, Total vs none, Wins.*
+
+The Total column is what dividing two cells of the WQL column gives. The two readings rank the
+last two rows differently, and the text below says which one to trust for what.
 
 **Calendar features do nothing, and next to better covariates they cost a little.** That's the
 finding most likely to catch out anyone who has built a classical forecasting pipeline, where
 hour-of-day and day-of-week dummies are usually the first thing added. On its own the calendar's
 interval sits tight around zero at −0.2%, and the rung wins fewer than half its windows. The last
 row goes further: the operator's forecasts *without* the calendar beat the same forecasts with it
-by 2.8% [+0.6, +5.1], and have the lowest mean loss of the table. The reason shows up in Part 1's
+by 2.8% [+0.6, +5.1] (compared window by window, so it is not the difference of the two cells),
+and have the lowest mean loss of the table. The reason shows up in Part 1's
 architecture section, because Chronos-2 reads *positions*, and 2,048 positions of hourly price
 already carry the daily and weekly cycle far more precisely than five derived columns ever could.
 You add calendar features when a model can't see that shape on its own, but this one already does,
 and five extra series in the group are five more things for the attention to weigh.
 
-One qualification is needed here, because it bears on the advice from Part 1. The calendar rung
-bundles four *periodic* features (hour, weekday, month, weekend) together with the one aperiodic
-feature, holidays, and 2018 has only ten national holidays among 365 windows, too few to shift a
-yearly score no matter what happens on them. So the notebook also runs a rung with the holiday flag
-on its own, and scores both calendar rungs separately on the ten windows whose horizon falls on a
-holiday:
+One qualification, because it bears on the advice from Part 1. The calendar rung bundles four
+*periodic* features with the one aperiodic feature, holidays, and ten national holidays cannot
+move a score over 365 windows whatever happens on them. So the notebook also runs a rung with the
+holiday flag alone and scores it on the ten windows whose horizon falls on a holiday. There it
+takes **14.0%** off the quantile loss [+4.9, +22.8] and wins 8 of the 10; on the other 355 windows
+it changes nothing that can be measured (−0.9% [−2.1, +0.4]). Ten windows are a small sample, so
+take the direction of that gain as likely and its size as rough. The practical reading stands:
+keep the holiday flag and drop the rest of the calendar.
 
-![Table 3: articles/medium/tables/03_table_3.png](tables/03_table_3.png)
-
-*Table 3. Columns: Rung, All 365 windows, 10 holiday windows, 355 ordinary windows.*
-
-Both halves of Part 1's claim hold up. The periodic calendar is redundant, since the model
-reads it off the series itself, and on the days that do *not* follow the series' rhythm the flag
-takes fourteen percent off the quantile loss, with an interval that clears zero even at
-ten windows. The yearly null amounts to an average of a large gain on ten days and a small cost, too
-small to pin down, spread across the other 355 days. Keep the holiday flag and drop the rest of the
-calendar.
-
-**The operator's forecasts bring 8 to 11%, and past generation adds nothing that can be measured
-on top.** The three forecasts alone take 10.9% off the loss, with an interval well clear of zero.
-The `+past generation` rung reaches 11.8%, which looks like three and a half more points than
-`+TSO forecasts` until you compare it with the forecasts alone: the difference is +0.9% [−1.1,
-+3.1]. Most of that apparent gain was the calendar's small cost being diluted. A ladder is only as
-good as its rungs, and this one needed the extra row to be read correctly.
+**The operator's forecasts bring about 11%, and past generation adds nothing that can be
+measured on top.** The three forecasts alone take 10.9% off the loss on a typical window, with an
+interval well clear of zero, and 11.8% [+5.6, +17.8] off the year's total. The `+past generation`
+row reads three and a half points above `+TSO forecasts`, but both of those rows carry the
+calendar and its small cost. Against the forecasts alone, the row to compare it with, past
+generation adds +0.9% [−1.1, +3.1] on a typical window, and on the year's total it is behind
+(WQL 0.0463 against 0.0440), by 5.2% [−16.2, +1.9]. The two readings differ in sign and both
+intervals include zero, so nothing here says that past generation helps, and the total leans
+towards it costing a little. A ladder is only as good as its rungs, and this one needed the
+extra row to be read correctly.
 
 **When the forecast stops before the horizon does.** The ladder assumes that the operator's
 forecasts cover all 24 hours. A covariate's own forecast is often shorter than the horizon (a
@@ -215,9 +222,9 @@ handles that with no flag either: a NaN in `future_df` means "not known at this 
 given three ways and scored by half of the day against the price with no covariates
 ([`05_partial_skill.csv`](https://github.com/epjover/chronos2-in-practice/blob/main/results/05_partial_skill.csv)):
 
-![Table 4: articles/medium/tables/03_table_4.png](tables/03_table_4.png)
+![Table 3: articles/medium/tables/03_table_3.png](tables/03_table_3.png)
 
-*Table 4. Columns: The operator's forecasts are, Hours 1–12, Hours 13–24, All 24 hours.*
+*Table 3. Columns: The operator's forecasts are, Skill vs no covariates, hours 1–12, Hours 13–24, All 24 hours.*
 
 On the hours it covers, a forecast known for half of the day is as good as one known for all of
 it. It also helps the hours it does not reach, by 4.4% with an interval clear of zero, plausibly
@@ -226,25 +233,20 @@ forecasts, with no future at all, brings nothing here, where on EPF-DE it brough
 covariate that reaches only part of the horizon is still a covariate to pass, with NaN in the
 steps it does not reach, which is how the library is told that a value is not known.
 
-The direction of the wind effect is the textbook one. Wind and solar have near-zero marginal cost,
-so a windy day pushes expensive plants out of the merit order and lowers the price [10], and a
-forecast of wind is a forecast of that pressure.
-
-The gain is also considerably smaller than EPF-DE's 49.5%, but that isn't a contradiction. One
-comparison I'm leaving out is price error in EUR/MWh between the two markets, because the years
-differ, the price levels differ, and so does the volatility. What carries over is the relative
-improvement, and reading it fairly suggests that how much covariates help is a property of the
-market rather than of the model. A recent benchmark of Chronos-2 on daily wholesale prices across 23
-European markets reaches a similar conclusion from the other direction: the model's relative value
-depends on the comparator, the information set and the evaluation period [8].
+The gain is also considerably smaller than EPF-DE's 49.5%, but that isn't a contradiction. How
+much covariates help is a property of the market rather than of the model. A recent benchmark of
+Chronos-2 on daily wholesale prices across 23 European markets reaches a similar conclusion from
+the other direction: the model's relative value depends on the comparator, the information set
+and the evaluation period [8].
 
 ## 4. The leak, and what it looks like
 
-Two arms probe the mistake, and they disagree, which is what makes it interesting.
+Two arms probe the mistake: one leaks the observed covariates, the other the target itself.
+They disagree with each other, which is what makes it interesting.
 
-![Table 5: articles/medium/tables/03_table_5.png](tables/03_table_5.png)
+![Table 4: articles/medium/tables/03_table_4.png](tables/03_table_4.png)
 
-*Table 5. Columns: Arm, Skill vs none, Wins.*
+*Table 4. Columns: Arm, Skill vs none [95% CI], Wins.*
 
 **Swapping the published forecasts for the observed values changes almost nothing**, and if anything
 leaves results a touch worse. The reason has more to do with economics than with statistics. The
@@ -286,23 +288,19 @@ mean. With several targets it is an ordinal code. A missing value counts as a la
 and a label that appears in `future_df` but never in the context becomes the series mean, which
 tells the model nothing. A category is therefore as informative as its history in the context.
 
-Both versions were added to the price history as a known-future covariate, on the 365 windows:
-
-![Table 6: articles/medium/tables/03_table_6.png](tables/03_table_6.png)
-
-*Table 6. Columns: Weekday given as, WQL, Skill vs no covariates.*
-
-Neither helps, which section 3 already predicted for a periodic feature, and the encoding makes no
-difference that a year of windows can detect. That is the reassuring result. The encoding will
-matter for a covariate whose categories carry information the series does not (a promotion type,
-a tariff, a holiday kind): Part 7 has one of those on a retail panel, and measures what the
-forecast loses without it.
+Both versions were added to the price history as a known-future covariate, on the 365 windows.
+Neither helps (−1.1% [−2.5, +0.4] as a number, −0.8% [−2.1, +0.5] as a category), which section 3
+already predicted for a periodic feature, and the encoding makes no difference that a year of
+windows can detect. The encoding will matter for a covariate whose categories carry information
+the series does not (a promotion type, a tariff, a holiday kind): Part 7 has one of those on a
+retail panel, and measures what the forecast loses without it.
 
 ## 6. When the covariate is a professional forecast of the target
 
 Part 2 put the operator's day-ahead load forecast in the table as a reference: a 0.9% error
-against Chronos-2's 4.7%. That forecast is public before the cutoff, so it is also a legitimate
-known-future covariate for the load. There are two ways to use it.
+against Chronos-2's 4.7%. That forecast is published before the cutoff (with the caveat about
+later updates that Part 2 noted), so it is also a legitimate known-future covariate for the load.
+There are two ways to use it.
 
 - **As a covariate.** Put the operator's forecast in `future_df` and let the model work out, from
   the context alone, that this column is nearly the target.
@@ -315,9 +313,14 @@ The operator publishes one number per hour, so the comparison is made twice: on 
 that states its uncertainty is scored on its quantiles and the operator on a single number, and on
 WAPE, where both sides are point forecasts.
 
-![Table 7: articles/medium/tables/03_table_7.png](tables/03_table_7.png)
+![Table 5: articles/medium/tables/03_table_5.png](tables/03_table_5.png)
 
-*Table 7. Columns: Forecast of Spanish load, WQL, WAPE, 80% band covers, WAPE vs the operator.*
+*Table 5. Columns: Forecast of Spanish load, WQL, WAPE, 80% band covers, WAPE vs the operator.*
+
+The last column is the skill on a typical window, computed on WAPE. For the first row the year's
+total is further away still: divide the WAPE cells and Chronos-2's error is five times the
+operator's, a total of −399% against −223.5% on a typical day. For the other two rows the two
+readings agree to within a point or two.
 
 **As a covariate, the operator's forecast cuts Chronos-2's error by almost three quarters, and
 leaves it worse than the forecast it was given.** The error falls from 4.67% to 1.28%, the largest
@@ -325,6 +328,11 @@ gain from a covariate in this series. But the column it was handed has an error 
 model does not copy a covariate, however good; it blends it with its own reading of the history,
 and here its own reading is the weaker of the two. A zero-shot model has no way to learn that one
 input deserves nearly all of the weight. That takes training, which is Part 4's subject.
+
+The intervals get worse as the error gets better. The 80% band covers 67.2% of the hours with
+the operator's forecast as a covariate, down from 73.4% without it: the model is far more
+accurate and more overconfident still. On EPF-DE coverage rose with accuracy; here it fell, so
+check it every time a covariate goes in.
 
 **Correcting the operator's forecast matches it as a point forecast and adds what it lacks.** The
 residual model's WAPE is 0.93% against 0.94%, a difference of +1.6% with an interval that contains
@@ -358,12 +366,17 @@ Three ways to ask "how much did this input matter", each one a loop over forward
   and credit each one with its average gain over all the subsets it joins [4]. Of the three
   methods, this is the only one that accounts for two inputs carrying the same information.
 
+With two covariates the Shapley arithmetic fits in a line. Say the loss is 10 with neither, 8
+with A alone, 9 with B alone and 6 with both. A gains 2 when it joins nothing and 3 when it
+joins B, so its value is 2.5. B gains 1 and 2, so its value is 1.5. The two values add up to
+the 4 that the pair removed together, which is the property the other two methods lack.
+
 There are four covariate players: calendar treated as a group, and each operator forecast counted on
 its own, on the price task of section 3 and on all 365 day-ahead windows. A first version of this
 analysis used twelve windows, and none of its attributions could be told apart from zero: the
 covariates remove a few thousandths of WQL, less than the difference between one day and the next.
-Sixteen coalitions times 365 windows is 5,840 forecasts, and the stacked windows pass through the
-model in batches. The notebook as published ran on eight CPU cores, where that takes 32 minutes;
+Sixteen subsets (coalitions, in the method's vocabulary) times 365 windows is 5,840 forecasts,
+and the stacked windows pass through the model in batches. The notebook as published ran on eight CPU cores, where that takes 32 minutes;
 on the GPU of this series the same cell took two and a half.
 
 ```python
@@ -402,9 +415,9 @@ level rather than its error, which matters when there are no actuals yet to comp
 *Figure 3. Exact Shapley values over sixteen coalitions: each player's average marginal
 contribution to the WQL reduction over 365 windows, with its 95% interval.*
 
-![Table 8: articles/medium/tables/03_table_8.png](tables/03_table_8.png)
+![Table 6: articles/medium/tables/03_table_6.png](tables/03_table_6.png)
 
-*Table 8. Columns: Player, Ablation, Permutation, Shapley.*
+*Table 6. Columns: Player, Ablation, Permutation, Shapley.*
 
 The numbers are in units of WQL removed, and the last row is the sanity check: the four players'
 Shapley values add up, window by window, to what all the covariates remove together, 0.0032 of
@@ -429,8 +442,8 @@ what you should keep; the ladder is what answers the second question.
 
 ## 8. Which part of the past?
 
-The same machinery applies to the target's own history. Hertel et al. (2026) [3] cut the context into
-four segments, the last day, the rest of the week, the rest of four weeks and everything older, and
+The same machinery applies to the target's own history. Hertel et al. (2026) [3] cut the context
+(2,048 hours here) into four segments, the last day, the rest of the week, the rest of four weeks and everything older, and
 treat each one as a player that a coalition can switch off. The windows are the same 365, and the
 intervals resample them in the same weekly blocks.
 
@@ -439,30 +452,27 @@ intervals resample them in the same weekly blocks.
 *Figure 4. Shapley values of four context segments over the 365 windows, with 95% block-bootstrap
 intervals.*
 
-![Table 9: articles/medium/tables/03_table_9.png](tables/03_table_9.png)
+![Table 7: articles/medium/tables/03_table_7.png](tables/03_table_7.png)
 
-*Table 9. Columns: Segment, Shapley value [95% CI].*
+*Table 7. Columns: Segment, Shapley value [95% CI].*
 
 **The price's own history outweighs the covariates by more than an order of magnitude.** The whole
 context removes 0.1084 of WQL; the four covariate players of section 7 remove 0.0032 between them.
-The ratio is 34, with an interval from 15 to 178 that is this wide because its denominator sits
-close to zero. For all the attention covariates get, including in this article, the series itself
-remains the dominant input.
-
-**Recent history carries most of it, and old history carries little per hour.** The last day alone
-holds 40% of the total. The hours older than four weeks are two thirds of the 2,048-hour context
-and hold 12%. That is Part 2's context curve seen from the inside: the skill stopped growing
-after about a thousand hours because the hours added beyond that point are these.
+The ratio is 34, with an interval from 15 to 178. (Both totals are resampled together over the
+same blocks of windows, so this is not the quotient of the two intervals above.) It is this
+wide because its denominator sits close to zero. The last day alone holds 40% of the total, and the hours older than four weeks,
+two thirds of the 2,048-hour context, hold 12%. That is Part 2's context curve seen from the
+inside: the skill stopped growing after about a thousand hours because the hours added beyond
+that point are these.
 
 **Occlusion agrees about the last day and disagrees about everything else.** Slide a one-day gap
-back through the last four weeks, one day at a time. Hiding the most recent day costs
-0.0209 [0.0121, 0.0325] of WQL, and no other single day costs more than 0.0009. Read on its own,
-that says only yesterday matters. The Shapley values say that the three older segments hold 60% of
-the total. Both are right, and the difference is redundancy. Occlusion hides one day while the 27
-others stay in place, and the neighbours of a hidden Tuesday stand in for it; a Shapley value also
-averages over coalitions in which the neighbours are missing. Information that exists in several
-copies looks worthless to occlusion, which is the reason not to read an occlusion curve as a
-ranking of what the model needs.
+back through the last four weeks. Hiding the most recent day costs 0.0209 [0.0121, 0.0325] of
+WQL, and no other single day costs more than 0.0009, which read on its own says that only
+yesterday matters. The Shapley values say that the three older segments hold 60% of the total.
+The difference is redundancy: occlusion hides one day while its 27 neighbours stand in for it,
+and a Shapley value also averages over subsets in which the neighbours are missing. Information
+that exists in several copies looks worthless to occlusion, so do not read an occlusion curve as
+a ranking of what the model needs.
 
 ![Figure 5: results/figures/06_occlusion.png](../../results/figures/06_occlusion.png)
 
@@ -486,9 +496,9 @@ future_more_wind = future.assign(
 *Figure 6. The same day forecast three times, with the operator's wind forecast scaled. Lines
 are the three medians; the band is the 80% interval of the unscaled forecast.*
 
-![Table 10: articles/medium/tables/03_table_10.png](tables/03_table_10.png)
+![Table 8: articles/medium/tables/03_table_8.png](tables/03_table_8.png)
 
-*Table 10. Columns: Scenario, Mean predicted price.*
+*Table 8. Columns: Scenario, Mean predicted price.*
 
 More wind lowers the predicted price, and less wind raises it. In the Spanish market that's the
 correct direction, because renewables with near-zero marginal cost displace expensive plants in the
@@ -503,7 +513,9 @@ what the market would do.
 
 Chronos-2 accepts **numeric and categorical covariates only**, and it takes no text. A promotion's
 description, an incident report, a weather warning written in words, none of these go in, and the
-paper lists multimodal inputs as future work rather than a feature (section 6 of [1]).
+paper lists multimodal inputs as future work rather than a feature (section 6 of [1]). It has no
+input for static attributes either (a store's type, a meter's region): everything goes in as a
+series, and Part 7 measures what a constant column adds.
 
 In practice the engineering job means turning what you know into numbers and categories: a holiday
 becomes a flag, a tariff becomes a level, a published forecast becomes a column. The ladder in

@@ -1,9 +1,9 @@
 # Chronos-2 in Practice (4/7): Fine-Tuning, LoRA Against Full, and What It Buys
 
 **At the library's defaults, a 4.6 MB LoRA adapter buys 2.7% over zero-shot, and training all 119
-million weights buys 2.0% with a checkpoint a hundred times larger. A learning rate ten times
-higher and a longer budget, chosen on a validation half-year, buy 8.0%: less than half of what
-that half-year promised, nearly all of it on the hardest third of the days, and at the price of
+million weights buys 2.0%, which its interval cannot tell from zero, with a checkpoint a hundred
+times larger. A learning rate ten times higher and a longer budget, chosen on a validation
+half-year, buy 8.0% over three seeds: less than half of the 19.2% that half-year promised, visible only on the hardest third of the days, and at the price of
 3.6% on temperature series the adapter was never trained on.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
@@ -37,7 +37,8 @@ those options through the 365-window backtest of Part 2, three seeds at a time.
 
 > **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
 > series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
-> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window. **Total**
+> is the same comparison on the summed error of all the windows, where the bad days weigh more.
 > **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
 > **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
 > over windows.
@@ -73,7 +74,9 @@ val_inputs = to_fit_inputs(val_frame, freq=FREQ, prediction_length=HORIZON)
 ```
 
 Without this, validation loss measures how well the model can continue a series it is already
-partway through, and that isn't the task.
+partway through, and that isn't the task. (The validation loss in the tables below is the
+model's training objective, a quantile loss on its own standardised scale, averaged over these
+windows. It compares one run with another and is not on the scale of WQL.)
 
 The validation period is used twice. The 702 windows above (27 weekly cutoffs of 26 series) give
 the loss that stops the training. Weekly cutoffs all forecast the same weekday, a Saturday here,
@@ -165,6 +168,7 @@ seeds of 1,000 steps each:
 | `lora_r8` | 1,206,912 | 1.00% | 5.2 min | 3,767 MB | 4.6 MB | 3.1006 |
 | `lora_r16` | 2,413,824 | 1.98% | 5.1 min | 3,790 MB | 9.2 MB | 3.0637 |
 
+The share counts the adapter in the total, which is why rank 16 reads 1.98% and not 2.02%.
 Training time and memory do not depend on the rank, because the backward pass is dominated by the
 frozen model rather than the adapter. All three fit in half of an 8 GB card. The artifact runs to
 single-digit megabytes, which is the strongest operational argument for LoRA: one adapter per
@@ -190,12 +194,13 @@ averaged window by window, with 95% block-bootstrap intervals.*
 | `lora_r8` | 0.0374 | +2.7% [+0.4, +4.8] | +2.3% to +3.0% | 56% | 72.2% |
 | `lora_r16` | 0.0374 | +2.1% [−1.1, +5.3] | +1.5% to +2.7% | 54% | 70.6% |
 
-Skill follows fev-bench's definition [3], the one Part 2 adopted: one minus the geometric mean of the
-per-window error ratios. Each row averages its three runs window by window before that mean is
-taken, and "Single runs" gives the lowest and the highest of the three on their own.
+Skill is Part 2's skill on a typical window, the fev-bench formula [3] applied to the windows:
+one minus the geometric mean of the per-window error ratios. Each row averages its three runs
+window by window before that mean is taken, and "Single runs" gives the lowest and the highest
+of the three on their own.
 
 **The rank does not matter here; the seed matters as much.** The three ranks, each averaged over
-its seeds, differ by 0.7 points; two single runs can differ by 1.5. Anyone who trained each rank
+its seeds, differ by less than a point; single runs, across ranks and seeds, span 1.5 points. Anyone who trained each rank
 once and picked the winner would have been choosing among seeds. The validation loss does fall
 steadily with the rank (3.14, 3.10, 3.06), and the test year does not follow it: the largest
 adapter has the best loss and the widest interval.
@@ -203,8 +208,8 @@ adapter has the best loss and the widest interval.
 **All three win about 55% of the windows.** On any given day the adapted model is almost as likely
 to be behind the zero-shot one as ahead of it. The gain is a small tilt, not a daily improvement.
 
-**The intervals get narrower.** The 80% interval covered 73.4% zero-shot. Rank 4 leaves it there,
-rank 8 takes it to 72.2% and rank 16 to 70.6%. The more capacity the fine-tune has, the more it
+**The intervals get narrower.** The 80% interval covered 73.4% zero-shot. Rank 4 barely moves it
+(73.2%), rank 8 takes it to 72.2% and rank 16 to 70.6%. The more capacity the fine-tune has, the more it
 sharpens the model's confidence, faster than it improves the accuracy. [Part 6](#) widens the
 zero-shot model's intervals with a conformal calibration applied after the model. The method takes
 any model's quantiles, though this series runs it on the zero-shot ones only.
@@ -229,6 +234,9 @@ computed in the same pass and shown beside them, but the choice reads only the v
 | 1,000 steps, lr 1e-4 | 800 of 1,000 | 2.7851 | +7.8% [+1.1, +14.1] | +3.4% [−2.4, +8.4] |
 | 4,000 steps, lr 1e-4 | 2,200 of 4,000 | 2.6674 | +19.2% [+11.8, +25.9] | +8.3% [+1.8, +14.3] |
 
+The first row is the default budget with one seed, which is why its validation loss (3.0962)
+is not the 3.1006 of the cost table: that one averages three seeds.
+
 **The defaults leave most of the gain unused.** At ten times the learning rate the loss reaches its
 minimum before the budget runs out (step 800 of 1,000; step 2,200 of 4,000, where early stopping
 ends the run at step 2,500), and the validation skill goes from 1.9% to 19.2%. The choice is the
@@ -238,12 +246,16 @@ last row.
 +8.3%. The winner carried over, the size did not. The validation half-year starts the hour after
 the training data end, the test year starts six months later, and the configuration was selected
 for doing well on the first. A gain measured on the period that chose it is optimistic, and here
-it was optimistic by more than a factor of two. The search is also part of the price: the three extra
+it was optimistic by more than a factor of two. On the total error of each period, Part 2's other
+reading, the same run goes from +23.4% to +14.1% (`12_two_readings.csv`): a smaller drop, and a
+drop all the same.
+(Over three seeds the test total is +12.9%, in the table of section 5.) The search is also part of the price: the three extra
 candidates took 38 minutes of GPU between them.
 
-**The chosen budget with three seeds, on the test year**
-([`07_tuned_summary.csv`](../results/07_tuned_summary.csv)): +8.0% [+2.3, +13.3], with single runs
-between +8.3% and +9.8%. The three-seed figure sits just below every single run because the runs
+**The chosen budget with three seeds, on the test year.** The +8.3% of the table is one run, the
+one the search trained. Two more seeds of the same configuration give the figure this article
+quotes from here on ([`07_tuned_summary.csv`](../results/07_tuned_summary.csv)): +8.0%
+[+2.3, +13.3], with single runs between +8.3% and +9.8%. The three-seed figure sits just below every single run because the runs
 are averaged window by window before the ratio is taken, and the windows on which one seed does
 badly are not the ones on which another does. The 80% interval now covers 70.2%.
 
@@ -277,11 +289,15 @@ full = finetune(
 
 *Figure 2. The three fine-tunes against zero-shot on the same 365 windows, three seeds each.*
 
-| Model | WQL | Skill vs zero-shot [95% CI] | Single runs | Mean WQL change | 80% coverage |
-| --- | ---: | --- | --- | ---: | ---: |
-| LoRA rank 8, library defaults | 0.0374 | +2.7% [+0.4, +4.8] | +2.3% to +3.0% | −3.5% | 72.2% |
-| LoRA rank 8, budget chosen on validation | 0.0337 | +8.0% [+2.3, +13.3] | +8.3% to +9.8% | −12.9% | 70.2% |
-| full fine-tune, library defaults | 0.0373 | +2.0% [−2.0, +5.8] | +1.7% to +2.7% | −3.8% | 69.7% |
+| Model | WQL | Skill vs zero-shot, typical window [95% CI] | Single runs | Total vs zero-shot [95% CI] | 80% coverage |
+| --- | ---: | --- | --- | --- | ---: |
+| LoRA rank 8, library defaults | 0.0374 | +2.7% [+0.4, +4.8] | +2.3% to +3.0% | +3.5% [+0.7, +6.0] | 72.2% |
+| LoRA rank 8, budget chosen on validation | 0.0337 | +8.0% [+2.3, +13.3] | +8.3% to +9.8% | +12.9% [+6.0, +19.1] | 70.2% |
+| full fine-tune, library defaults | 0.0373 | +2.0% [−2.0, +5.8] | +1.7% to +2.7% | +3.8% [−1.3, +8.5] | 69.7% |
+
+The WQL column is a mean over the windows, so it orders the rows as the Total column does. The
+typical window can order two close rows the other way, as it does here for the full fine-tune
+and the default adapter.
 
 | Model | Train time | Peak VRAM | Artifact | Latency per window |
 | --- | ---: | ---: | ---: | ---: |
@@ -292,8 +308,9 @@ full = finetune(
 Each interval above is against the zero-shot model, and two intervals that overlap do not say
 which of two fine-tunes is better. The paired comparison on the same windows does
 ([`08_paired_skill.csv`](../results/08_paired_skill.csv)). The adapter with the chosen budget
-against the default one: +5.5% [+0.6, +10.0]. The full fine-tune against the default adapter:
-−0.7% [−3.0, +1.5].
+against the default one: +5.5% [+0.6, +10.0] on a typical window, and +9.8% [+3.7, +15.6] on the
+year's total. The full fine-tune against the default adapter: −0.7% [−3.0, +1.5], and +0.4%
+[−2.4, +3.3] on the total.
 
 So at the library's defaults, training 100% of the weights instead of 1% buys nothing
 measurable, and it brings the lowest coverage of the three and a 456 MB checkpoint in place of a
@@ -303,7 +320,8 @@ statement about the defaults and not about what full fine-tuning can reach.
 **The gain is on the hard days.** Split the 365 windows into thirds by the error of the seasonal
 naive, a model outside the comparison (thirds by the zero-shot model's own error would flatter
 every alternative), and score each third separately
-([`08_gain_by_difficulty.csv`](../results/08_gain_by_difficulty.csv)):
+([`08_gain_by_difficulty.csv`](../results/08_gain_by_difficulty.csv)). Within a third the
+windows are not consecutive, so these intervals resample single windows and not blocks:
 
 | Days, by the seasonal naive's error | Zero-shot WQL | LoRA, defaults | LoRA, chosen budget | Full, defaults |
 | --- | ---: | --- | --- | --- |
@@ -311,11 +329,12 @@ every alternative), and score each third separately
 | middle third | 0.0409 | +2.0% [−2.2, +6.3] | +1.6% [−8.4, +10.3] | −1.3% [−10.1, +6.5] |
 | hardest third | 0.0629 | +5.7% [+2.4, +9.3] | +22.4% [+15.4, +29.1] | +9.6% [+3.6, +15.7] |
 
-On two thirds of the days no fine-tune can be told from the zero-shot model. The gain is on the
+On two thirds of the days every interval includes zero, and on the easiest third the point
+estimates of the chosen-budget adapter and of the full fine-tune are below it (−1.9% and −2.9%). The gain is on the
 days that least resemble the day before, where the zero-shot error is five times that of the easy
 days, and there the adapter with the chosen budget cuts it by more than a fifth. It is also why
-its mean WQL falls by 12.9% while its skill, which weighs every day equally, is 8.0%. Within a
-third the windows are not consecutive, so these intervals resample single windows and not blocks.
+the adapter's total error over the year falls by 12.9% while its skill on a typical day is 8.0%:
+the hard days are where the error is, and the total counts them by their size.
 
 Inference latency is the same for all three, 35 ms per window. That is the time the backtest
 harness spends on each window, its own checks and frame handling included, which is why it sits
@@ -389,7 +408,7 @@ The training set is now one series with its covariates, the reference is the zer
 Fine-tuning adds +4.9% on top of the covariates, with an interval clear of zero, from one series
 and five minutes of training. The validation column is the seed that made the choice; the test
 column of the last row averages three. Here the validation half-year predicted the test year
-almost to the decimal (+5.1% against +4.9%), which it did not on the load. One experiment each way is not
+almost to the decimal (+5.1% for one seed against +4.9% over three), which it did not on the load. One experiment each way is not
 enough to say when a validation gain transfers; it is enough to say that it has to be checked.
 
 ## 8. The decision
@@ -439,9 +458,10 @@ If you do fine-tune: LoRA at rank 8, the learning rate and the number of steps c
 validation backtest and not left at the defaults, early stopping on windowed validation data, three
 seeds before you quote a number, and the out-of-domain check of section 6 before you deploy.
 
-## 9. The same thing in one line
+## 9. The same thing in AutoGluon
 
-If you are already working in AutoGluon, the default run above collapses into a hyperparameter dict:
+This series did not run the snippet below; it follows AutoGluon's documentation [5]. If you are
+already working in AutoGluon, the default run above collapses into a hyperparameter dict:
 
 ```python
 from autogluon.timeseries import TimeSeriesPredictor
@@ -452,10 +472,9 @@ predictor = TimeSeriesPredictor(prediction_length=24, eval_metric="WQL").fit(
 )
 ```
 
-Pinning `hyperparameters` to `Chronos2` matters because, left alone, AutoGluon fits an ensemble, and
-the resulting accuracy is no longer attributable to this model. The defaults it would use are the
-ones in section 2, and section 4 is the reason to pass `fine_tune_lr` and `fine_tune_steps`
-yourself. The snippet follows AutoGluon's documentation [5]; this series did not run it.
+Pin `hyperparameters` to `Chronos2`: left alone, AutoGluon fits an ensemble, and the accuracy is
+no longer attributable to this model. Its defaults are the ones of section 2, and section 4 is
+the reason to pass `fine_tune_lr` and `fine_tune_steps` yourself.
 
 ## Cheat sheet
 

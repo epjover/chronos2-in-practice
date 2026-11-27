@@ -1,9 +1,10 @@
 # Chronos-2 in Practice (5/7): Deployment, Performance and Cost
 
-**A consumer GPU serves 216 series per second at 2,048 hours of context; eight CPU cores serve
-13. That is a 16.5× gap, against a 3.3× price gap, which settles the hardware question and
-makes every other deployment decision about idle time, not speed. The first version of this
-benchmark said 59×, and the reason it was wrong is the most useful lesson in the article.**
+**A consumer GPU serves 216 series per second at 2,048 hours of context; eight desktop CPU cores
+serve 13.1. That is a 16.5× gap on one machine, against a 3.3× gap between the hourly rates of a
+cloud GPU instance and a cloud CPU instance: wide enough to make the remaining deployment
+decisions about idle time, not speed. The first version of this benchmark said 59×, and the
+reason it was wrong is the most useful lesson in the article.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
 
@@ -18,8 +19,8 @@ How you find out when it stops working is Part 6.
 
 One framing note before the numbers. As of November 2026 AWS lists Chronos-2 in SageMaker
 JumpStart but sells no pay-per-call API for it. The weights are Apache-2.0 [7] and the library is
-public, and every path below runs the model **in your own account** and bills you for the compute,
-whether or not a request arrives.
+public, and every path below runs the model **in your own account** and bills you for the compute.
+An endpoint that stays up bills whether or not a request arrives.
 That's the opposite of how a hosted LLM usually works, and it makes idle time, rather than latency,
 the dominant cost term for most forecasting workloads. (Hosted alternatives exist outside AWS. Google's
 BigQuery exposes TimesFM as the `AI.FORECAST` SQL function [10], and third-party services such as
@@ -46,7 +47,8 @@ which is which. Treat the AWS code as a starting point that still has to meet a 
 
 > **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
 > series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
-> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window. **Total**
+> is the same comparison on the summed error of all the windows, where the bad days weigh more.
 > **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
 > **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
 > over windows.
@@ -65,7 +67,8 @@ time, a few minutes later, to see how much a single run can be trusted. The mach
 i9-12900K with 8 cores available to the process and an RTX 3070 with 8 GB of memory.
 
 **Check the thread count before you believe a CPU number.** The first run of this benchmark reported
-4 series per second on the CPU, but the machine can manage 13. The gap traced back to
+fewer than 4 series per second on the CPU, a 59× gap to the GPU, but the machine can manage 13.
+The gap traced back to
 `torch.get_num_threads()` returning 1, because the sandbox the benchmark ran in had left OpenMP at a
 single thread even though `nproc` said eight, and nothing in the output would have shown that. The
 script now calls `torch.set_num_threads()` itself and writes the CPU model, the cores available and
@@ -77,8 +80,10 @@ model, which is the habit to carry forward from all this.
 
 *Figure 1. Series per second against batch size at 2,048 hours of context, log-log; the line is
 the median of 30 calls and the band runs from the slowest 5% to the fastest 5%. Batching is
-transformative on the GPU and nearly useless on the CPU; the 27.9M-parameter `chronos-2-small`
-sits a factor of three above the 119.5M-parameter base model everywhere.*
+transformative on the GPU and a small gain on the CPU. The 27.9M-parameter `chronos-2-small`
+sits 3.4 to 3.5 times above the 119.5M-parameter base model on the CPU at every batch size. On
+the GPU it gets there with the batch (2.9× at 32 series, 3.3× at 128); at one series per call
+its lead on the GPU is 1.5×.*
 
 Full results are in [`results/bench_latency_cuda.csv`](../results/bench_latency_cuda.csv) and
 [`results/bench_latency_cpu.csv`](../results/bench_latency_cpu.csv). What stands out is what happens
@@ -104,7 +109,8 @@ scheduler. Between the two complete runs, the median of a cell moved by 1.2% on 
 typical case (5.7% at most) and by 5.0% on the CPU (16% at most, for `chronos-2` at 512 hours and
 8 series). So quote medians rather than means, since the CPU mean sits above the median in every
 cell; never quote a CPU latency from a handful of calls; and treat any throughput difference under
-about 5% on a GPU, or 15% on a CPU, as noise unless you ran it more than once.
+about 6% on a GPU, or 16% on a CPU, as noise unless you ran it more than once: two runs of the
+same cell differed by that much here.
 
 ![Figure 2: results/figures/09_latency_spread.png](../results/figures/09_latency_spread.png)
 
@@ -112,11 +118,11 @@ about 5% on a GPU, or 15% on a CPU, as noise unless you ran it more than once.
 hours of context. The marker is the 95th percentile: how much slower than typical the slow calls
 are. CPU cells spread two to four times wider than GPU cells, and small requests spread the most.*
 
-**Batching is the single biggest lever on a GPU, and does almost nothing on a CPU.** Going from one
-series per call to 128 multiplies GPU throughput by 5.8× at 2,048 hours of context, and by 23× at
-512 hours (34.4 → 777.3 series/s). On the CPU the same change moves throughput by about 40%, and
-then it gets worse, because eight cores are already saturated by a few series, so the extra work
-just queues up. If you serve from a CPU, batching mainly cuts per-request overhead rather than
+**Batching is the single biggest lever on a GPU, and a small one on a CPU.** Going from one
+series per call to 128 multiplies GPU throughput by 5.8× at 2,048 hours of context, and by 22.6× at
+512 hours (34.4 → 777.3 series/s). On the CPU the same change gives 1.4× at 2,048 hours and 2.6×
+at 512, and the best CPU batch is 32, not 128: eight cores are already saturated by a few
+series, so the extra work just queues up. If you serve from a CPU, batching mainly cuts per-request overhead rather than
 lifting throughput.
 
 **Context is the hidden throughput cost.** On the GPU, quadrupling context from 512 to 2,048 hours
@@ -124,27 +130,37 @@ cuts peak throughput from 777 to 216 series per second. Part 2 found that contex
 bought about 2.9 points of skill, inside its interval, so this is what that trade costs on the
 other side.
 
-**The small checkpoint runs more than three times faster and comes in roughly a quarter worse.**
-`chronos-2-small` is 3.3× faster on the GPU and 3.5× faster on the CPU at 2,048 hours. Part 1
-promised the other half of that trade, so
+**The small checkpoint runs more than three times faster, and costs a quarter more error on a
+typical day and a tenth more over the year.** `chronos-2-small` is 3.3× faster on the GPU and
+3.5× faster on the CPU at 2,048 hours, comparing the best batch size of each. Part 1 promised the
+other half of that trade, so
 [`bench/cheaper_variants_accuracy.py`](../bench/cheaper_variants_accuracy.py) runs both
 checkpoints through Part 2's protocol, using the same 365 day-ahead windows and 2,048 hours of
 context, with the interval resampled in blocks of seven days as in Part 2:
 
-| Checkpoint | Params | WQL | 80% coverage | Skill vs `chronos-2` [95% CI] | Wins | Skill vs seasonal naive |
-| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| Checkpoint | Params | WQL | 80% coverage | Skill vs `chronos-2`, typical window [95% CI] | Total vs `chronos-2` [95% CI] | Skill vs seasonal naive |
+| --- | ---: | ---: | ---: | --- | --- | ---: |
 | `chronos-2` | 119.5M | 0.0388 | 73.4% | n/a | n/a | 63.9% |
-| `chronos-2`, `bfloat16` | 119.5M | 0.0387 | 73.3% | −0.1% [−0.2, −0.0] | 45% | 63.8% |
-| `chronos-2-small` | 27.9M | 0.0426 | 71.5% | **−24.8%** [−31.5, −18.7] | 29% | 54.9% |
+| `chronos-2`, `bfloat16` | 119.5M | 0.0387 | 73.3% | −0.1% [−0.2, −0.0] | +0.0% [−0.0, +0.1] | 63.8% |
+| `chronos-2-small` | 27.9M | 0.0426 | 71.5% | **−24.8%** [−31.5, −18.7] | **−9.9%** [−15.2, −6.0] | 54.9% |
 
-That is a real cost. On the typical window the small model's quantile loss comes in a quarter
-higher, and the interval is nowhere near zero. But it is also still 55% better than the seasonal
-naive, and in Part 2's table it would sit above every classical baseline. The fair way to frame it
-is that `chronos-2-small` is the right checkpoint when throughput is the binding constraint and a
-quarter more error is affordable (a CPU-only serverless endpoint is the obvious case), and the wrong
-one when the forecast's quality is what you are paid for.
+In the `bfloat16` row the typical window reads −0.1% and the total rounds to zero; the signs on
+the zeros are those of the unrounded values.
 
-**Half precision is the cheaper variant that costs nothing measurable.** The middle row of that
+The small model's is a real cost, and how large it is depends on which of Part 2's two readings
+your use case follows. On a typical window its quantile loss is a quarter higher (the Skill
+column, a geometric mean over the windows). Over the whole year it is a tenth higher (the Total
+column, which is what dividing the two WQL cells gives). Both intervals are nowhere near zero.
+The gap between the readings says where the small model loses. Split the windows into thirds by
+the seasonal naive's error, as Part 4 does, and the small model's summed loss is 25% higher on
+the easiest third and 7% to 9% higher on the other two, which hold 89% of the year's loss. It is
+also still
+55% better than the seasonal naive on a typical window, and in Part 2's table it would sit above
+every classical baseline. So `chronos-2-small` is the right checkpoint when throughput is the
+binding constraint (a CPU-only serverless endpoint is the obvious case), and the wrong one when
+the forecast's quality is what you are paid for.
+
+**Half precision is the cheaper variant, and it costs a tenth of a percent.** The middle row of that
 table is the same checkpoint with its weights loaded as 16-bit floats, which is one argument:
 
 ```python
@@ -153,7 +169,7 @@ from chronos import Chronos2Pipeline
 
 pipeline = Chronos2Pipeline.from_pretrained(
     "amazon/chronos-2", device_map="cuda", dtype=torch.bfloat16
-)  # c2p: load_chronos2(device="cuda", dtype="bfloat16")
+)  # with the repository's helper package: c2p.models.load_chronos2(device="cuda", dtype="bfloat16")
 ```
 
 On the 365 windows its typical window is 0.1% worse than the 32-bit model's, with an interval of
@@ -169,13 +185,14 @@ protocol):
 
 A single series takes the same 26 to 27 ms either way, because one series does not fill the card.
 From eight series on, half precision is 1.6 to 2.0 times faster, and the memory for one series
-falls from 469 MB to 240 MB. This was measured on the GPU only; the CPU rows above, the service
+falls from 469 MB to 240 MB (the peak at one series per call, in `bench_latency_cuda.csv` and
+`bench_latency_cuda_bf16.csv`). This was measured on the GPU only; the CPU rows above, the service
 of section 2 and the costs of section 3 all use `float32`. Precision is the only lever of this
 kind that the series measured: `torch.compile`, an ONNX export and quantization were not tried.
 
 **The same call without pandas.** Every number in this series goes through `predict_df`, which
-takes and returns data frames. A service that already holds arrays can call the model on them
-directly:
+takes and returns data frames. A service that already holds arrays can skip them, and this is
+the one piece of this section with no timing behind it:
 
 ```python
 quantiles, mean = pipeline.predict_quantiles(
@@ -194,10 +211,9 @@ quantiles[0].shape  # (1, 24, 3): variates, steps, levels
 
 One dict per series; a covariate whose future is known appears in both inner dicts. There are
 no timestamps on this route, so the regular grid of Part 1 is yours to guarantee. A test in the
-repository checks that both routes return the same numbers; this series did not time the
-difference.
+repository checks that both routes return the same numbers.
 
-**Single-request latency is good enough everywhere.** One series, 2,048 hours of context, 24-step
+**Single-request latency is good enough on both devices.** One series, 2,048 hours of context, 24-step
 horizon, runs in 27 ms on the GPU (30 ms at the 95th percentile) and 109 ms on 8 CPU cores (154 ms
 at the 95th). Either is fine for an interactive dashboard. Latency is almost never why you'd buy a
 GPU, because throughput is the real driver.
@@ -249,7 +265,8 @@ saving is a few milliseconds on requests that take tens, and a silent wrong fore
 
 ### A managed endpoint in your account
 
-[`deploy/sagemaker`](../deploy/sagemaker/) bundles a handler together with the `c2p` package into a
+[`deploy/sagemaker`](../deploy/sagemaker/) bundles a handler together with the repository's helper
+package (`c2p`) into a
 `model.tar.gz`, registers it, and spins up an endpoint. The handler speaks **the same JSON** as
 the FastAPI app, so a client built against one also works against the other, and the two can be
 compared on cost rather than on how much rewriting each one needed.
@@ -295,9 +312,10 @@ endpoint = model.cache_model_artifact("s3://bucket/prefix/artifact").deploy(
 endpoint.delete_endpoint()
 ```
 
-Option (c) is the only one in this article that bills nothing while it's idle. It's CPU-only, and it
-pays a cold start on the first call after a quiet period (the official deployment guide [4] puts it
-at 30 to 60 seconds), but for a once-a-day forecast that's a trade most people would happily take.
+Of the two endpoints, option (c) is the only one that bills nothing while it's idle (the batch
+job of option (a) bills only while it runs). It's CPU-only, and it
+pays a cold start on the first call after a quiet period (the library's SageMaker deployment
+notebook [4] gives 30 to 60 seconds for a serverless endpoint), but for a once-a-day forecast that's a trade most people would happily take.
 
 AWS also lists Chronos-2 in SageMaker JumpStart (model id `pytorch-forecasting-chronos-2` [4]),
 offering the same idea but through the console. Whichever option you pick, the endpoint belongs to you, and so does
@@ -314,13 +332,11 @@ need to. Work out where the data is allowed to go before you decide where the mo
 that first constraint usually settles the second.
 
 **The licence is permissive, and that's not something you can assume in this field.** Chronos-2's
-weights and the `chronos-forecasting` library are Apache-2.0, which means commercial use,
-modification and redistribution are all allowed, as long as you include attribution and a copy of
-the licence. A LoRA adapter from Part 4 counts as a derivative work, so you're free to ship it. Part
-1 pointed out that TimesFM-3, which claims a higher leaderboard score, comes under a non-commercial
-licence, and a model you can't deploy for a customer isn't a better model for that customer. The
-dataset used in this series is CC0, but check the terms of yours before it ends up in a training
-job.
+weights and the `chronos-forecasting` library are Apache-2.0: commercial use, modification and
+redistribution are allowed with attribution and a copy of the licence, and a LoRA adapter from
+Part 4 is a derivative work you are free to ship. Part 1's leaderboard had a higher-scoring model
+under a non-commercial licence, and a model you can't deploy for a customer isn't a better model
+for that customer.
 
 ## 3. What it costs, and which part of that number you can trust
 
@@ -350,21 +366,28 @@ rate-only break-even, the one number here that does not depend on a local measur
 | `ml.c7i.2xlarge` | 8 / none | 0.428 | 312 | **9.09** |
 | `ml.m5.2xlarge` | 8 / none | 0.461 | 337 | 9.79 |
 
+The monthly column multiplies the unrounded hourly rate (1.1267 for `ml.g6.xlarge`), so it can
+differ by a dollar from the product of the two cells shown.
+
 Read the two halves of this table differently, because they are not equally solid.
 
 **The rates are exact.** The break-even ratio comes from them alone, because `ml.g5.xlarge` costs
 3.29× what `ml.c7i.2xlarge` costs (the 8-vCPU instance, matched to the 8 cores the CPU number was
-measured on), so it becomes the cheaper way to serve a given volume as soon as it runs more than
-3.3× faster. Section 1 measured 16.5×, so for throughput work the GPU is not a close call. But
-notice how much closer it got once the CPU was allowed to use its cores. With the single-thread
+measured on; `ml.g5.2xlarge`, the same card with eight vCPUs of its own, costs 3.54×), so it becomes the cheaper way to serve a given volume as soon as it runs more than
+3.3× faster. Section 1 measured 16.5× between a desktop GPU and a desktop CPU, not between those
+two instances (the caution below), and a margin of five over the break-even leaves room for that
+difference: for throughput work the GPU is not a close call. But notice how much closer it got
+once the CPU was allowed to use its cores. With the single-thread
 number the gap was 59×, and a benchmark error of that size would have bought a GPU nobody needed.
 
 One caution applies to the GPU rows. The table assigns the *same* measured throughput, taken from an
 RTX 3070, to every GPU instance, so within those four rows the ranking just reflects the ranking of
 hourly rates. In reality `ml.g4dn.xlarge` carries a T4, which is an older and slower part than the
 A10G in `ml.g5.xlarge`, so its row turns out to be the most optimistic one in the table. This
-benchmark can't settle which GPU is cheapest per forecast, but it does show that the cheapest GPU
-beats the cheapest 8-vCPU CPU instance by an order of magnitude. One external anchor: the
+benchmark can't settle which GPU is cheapest per forecast. What the rates do settle is narrower:
+a GPU row stays below the cheapest 8-vCPU row as long as its card delivers more than a given
+share of the RTX 3070's throughput: 10% for `ml.g4dn.xlarge`, 16% for `ml.g6.xlarge`, 20% for
+`ml.g5.xlarge` and 21% for `ml.g5.2xlarge`. One external anchor: the
 Chronos-2 paper [1] reports over 300 series per second on a single A10G, for a batch of 1,024 series
 with 2,048 steps of context and a 64-step horizon. That is a larger batch and a longer horizon
 than anything measured here (the RTX 3070 reaches 216/s at 128 series, 2,048 hours of context and
@@ -410,7 +433,7 @@ which is what day-ahead forecasting really amounts to, calls for a batch job tha
 - Before any CPU number, print `torch.get_num_threads()` and set it yourself. Record the CPU
   model and the thread count next to every latency.
 - Time each cell dozens of times and report the median with its 5th and 95th percentiles, never a
-  mean of a handful of calls; run the sweep twice before reading a difference under 15% on a CPU.
+  mean of a handful of calls; run the sweep twice before reading a difference under 16% on a CPU.
 - Measure throughput at the batch size you will use. On a GPU, batch; on a CPU, do not bother.
 - On a GPU, load the weights as `bfloat16` and check the accuracy on your own windows: here it
   doubled the throughput at 128 series and changed the WQL by 0.1%.
@@ -445,7 +468,7 @@ the repair of the intervals that every part so far has found too narrow.
 9. The Forecasting Company API, *Overview* (available models, among them `chronos-2`).
    https://docs.retrocast.com/documentation
 10. Google Cloud, *The AI.FORECAST function* (BigQuery, TimesFM).
-    https://cloud.google.com/bigquery/docs/reference/standard-sql/bigqueryml-syntax-ai-forecast
+    https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/bigqueryml-syntax-ai-forecast
 
 **Suggested tags:** Time Series Forecasting · MLOps · Machine Learning · Foundation Models ·
 Python

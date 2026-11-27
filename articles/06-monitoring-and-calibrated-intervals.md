@@ -1,7 +1,7 @@
 # Chronos-2 in Practice (6/7): Monitoring and Calibrated Intervals
 
 **The model's 80% interval covers 73% of the hours of the year and 56% of December. A correction
-learned once fixes the year and leaves February at 69%. One that keeps learning from the forecasts
+learned once fixes the yearly average and leaves January, February and December between 69% and 73%. One that adjusts its target after each of the forecasts
 already resolved holds every month between 74% and 84%, without touching the model.**
 
 *Disclosure: this article was drafted with the help of an AI assistant. Every experiment was run from the companion repository, every number is read from its results files, and the text was reviewed and edited by the author.*
@@ -29,8 +29,10 @@ does not hold in a winter it has not seen.
 
 > **Terms from Part 2.** **WQL** is the error of the forecast's quantiles as a share of the
 > series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
-> a model's WQL divided by a reference's: +10% is 10% less error on a typical window.
-> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
+> a model's WQL divided by a reference's: +10% is 10% less error on a typical window. **Total**
+> is the same comparison on the summed error of all the windows, where the bad days weigh more.
+> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target.
+> **WAPE** is the absolute error of the median forecast as a share of the load. A
 > **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
 > over windows.
 
@@ -91,27 +93,35 @@ cutoffs above the threshold.*
 | rolling WAPE (28 cutoffs) | 2.65% | 4.22% | 6.75% |
 | 80% interval coverage | 55.1% | 77.5% | 87.1% |
 
-The rolling WAPE pools 28 days of absolute error over 28 days of load, so it differs from Part 2's
-per-window mean of 4.7%: the two agree on the level but differ in how the averaging is done.
+The rolling WAPE pools 28 days of absolute error over 28 days of load. Its mean over the year
+is 4.35%, under Part 2's per-window mean of 4.7%, and about three quarters of that gap has one
+cause: the
+first 27 days of January, the worst month of the year, have no four-week window behind them
+yet and enter the later windows only.
 
 At a 6% threshold, **13 of 365 cutoffs breach, in 4 episodes**: one in late January, two in
 mid-February a day apart, and one in Christmas week. That clustering is the most useful thing in the
-figure, and it says more about the rule than about the model. These are cold snaps and a national
-holiday, recurring and predictable conditions, not drift. A fixed threshold on a seasonal series
+figure, and in this year it says more about the rule than about the model (one year of one series
+cannot say how general that is). These are cold snaps and a national holiday, recurring and
+predictable conditions, not drift. A fixed threshold on a seasonal series
 will page you every Christmas and teach your on-call to ignore it. So either set the threshold from
 the same season last year, or alert on the gap between this year and last year rather than on the
 level.
 
 The coverage panel is the one I'd act on first. The rolling coverage of the nominal 80% band
-averages 74.8% (73.4% over the whole year, as in Part 2), but it drops to 55% in winter. The median
+has a median of 77.5% and drops to 55% in winter. Its mean is 74.8% over the 338 cutoffs that
+have a full four-week window behind them. (Over all the hours of the year the coverage is
+Part 2's 73.4%; the first 27 days of January, a poor month, have no window yet.) The median
 holds up; the uncertainty around it does not. Sections 3 and 4 fix it.
 
 **Input drift** is the complement (errors tell you something broke after the fact, while a shift
 in the inputs can be seen before the actuals land). Comparing the first quarter of 2018 with the
 last gives a mean shift of 0.03 reference standard deviations and 21.5% of current values
-outside the reference 10–90% range, against 20% expected by construction. Nothing moved. That
-is the answer you want from a drift check most of the time, and the reason to keep it cheap and
-explainable rather than clever.
+outside the reference 10–90% range, against 20% expected by construction. Nothing here points
+to a shift: a point and a half over the expected share, on hourly values that follow one
+another closely, is small. The check has no interval of its own, so use it as a screen and not
+as a test. No news is the answer you want from a drift check most of the time, and the reason to
+keep it cheap and explainable rather than clever.
 
 ## 2. What to do when the alert fires
 
@@ -121,14 +131,16 @@ slower hand.
 **A retraining rule that can be followed.** When the rolling WAPE climbs above threshold for the
 first time in an episode:
 
-1. Train a new adapter on the data up to a cutoff that leaves the most recent weeks out.
+1. Train a new adapter on the data up to a cutoff that leaves the most recent four weeks out
+   (the length of the panel's rolling window).
 2. Score the new adapter and the model in production on those held-out weeks, on the same
    windows, with a block-bootstrap interval on the skill (Part 2).
 3. Promote the new adapter only if the interval excludes zero and the coverage of the 80% band
    is not worse. Otherwise keep what is deployed.
 
 The held-out weeks matter: an adapter scored on windows it was trained on will always look better,
-and Part 4's adapter kept less than half of the gain its validation period had shown. Step 3 will
+and Part 4's adapter kept less than half of the gain its validation period had shown (19.2%
+there, 8.0% on the test year). Step 3 will
 also usually say no. Part 4's fine-tuning gains on this series run from 2% to 8% with intervals
 several points wide on a full year of windows, and a few weeks of daily windows cannot separate
 gains of that size from zero; Part 2 needed a full year to put an interval of twelve points around
@@ -153,7 +165,7 @@ adjustment is learned per quantile pair and per horizon step, and applied as a p
 **What the method promises, and when.** Conformal methods come with a coverage guarantee, and the
 guarantee has a condition: the misses of the calibration period and of the period being forecast
 must be exchangeable, which in practice means drawn from the same distribution [1]. A time
-series does not give you that for free. A winter that behaves unlike the calibration
+series does not give you that for free: a week of January is not a week of October. A winter that behaves unlike the calibration
 months breaks the condition, and the coverage with it. So the right way to read everything below
 is as a measurement of how far the condition holds on this series, month by month, and not as a
 guarantee that was bought.
@@ -194,7 +206,13 @@ tidy. Calibrated on a half-year that contains December but not January or Februa
 correction over-covers April to September at 88 to 91% and still under-covers the winter: 72.7%
 in January, 68.9% in February, 69.3% in December. The yearly 83% is an average of months that are too
 wide and months that are too narrow. This is the exchangeability condition failing in the way the
-paragraph above said it could.
+paragraph above said it could. December shows it from the other side: it is in the calibration
+half-year, as one month of six, and one correction per step is sized for the whole pool and not
+for its hardest month.
+
+> **Without the repository.** A static calibration is twenty lines: for each horizon step, the
+> scores `max(lower − y, y − upper)` over the calibration forecasts, their `ceil((n + 1)(1 − α)) / n`
+> empirical quantile, and that number added to `upper` and subtracted from `lower`.
 
 ## 4. Calibration that keeps learning
 
@@ -213,7 +231,8 @@ Two versions, with their one setting each fixed before the run and not tuned on 
   the miss rate the correction aims for. After a day whose band missed more than 20% of the
   hours, it aims a little wider the next day; after a day that missed less, a little narrower.
   The step is the one used in the paper's experiments, 0.005 per observation, which is 0.12 per
-  day of 24 hours.
+  day because a day resolves 24 hourly observations at once. On another cadence, multiply the
+  per-observation step by the number of observations that resolve between two updates.
 
 ```python
 from c2p.conformal import AdaptiveConformalForecaster
@@ -222,13 +241,15 @@ rolling = AdaptiveConformalForecaster(model, calibration_frame, window=56)
 aci = AdaptiveConformalForecaster(model, calibration_frame, gamma=0.005 * 24)
 ```
 
-| | WQL | 80% coverage | 98% coverage | WQL skill vs zero-shot [95% CI] | Worst month (80%) |
+| | WQL | 80% coverage | 98% coverage | Skill vs zero-shot, typical window [95% CI] | Worst month (80%) |
 | --- | ---: | ---: | ---: | --- | ---: |
 | zero-shot | 0.0388 | 73.4% | 93.6% | n/a | 56.1% (Dec) |
 | conformal, additive | 0.0387 | 83.2% | 98.4% | −5.9% [−7.4, −4.3] | 68.9% (Feb) |
 | conformal, scaled | 0.0386 | 83.5% | 98.5% | −4.1% [−5.0, −3.1] | 69.9% (Dec) |
 | conformal, rolling pool | 0.0388 | 81.9% | 97.7% | −7.2% [−10.4, −4.6] | 74.2% (Dec) |
 | conformal, ACI | 0.0386 | **79.8%** | 97.2% | −3.9% [−6.0, −2.2] | 74.0% (Dec) |
+
+Bold marks the yearly coverage closest to the nominal 80%.
 
 ![Figure 2: results/figures/09_conformal_coverage.png](../results/figures/09_conformal_coverage.png)
 
@@ -238,7 +259,8 @@ adaptive ones flatten it.*
 
 **The adaptive corrections hold the winter.** January and February, the two months the static
 calibration had never seen, go from 72.7% and 68.9% to 83.2% and 82.3% with the rolling pool, and
-to 81.5% and 79.5% with ACI. Across the twelve months ACI stays between 74.0% and 83.5%, where the
+to 81.5% and 79.5% with ACI. Across the twelve months ACI stays between 74.0% (December) and
+83.5% (November), where the
 static correction ran from 68.9% to 90.6% and the uncorrected model from 56.1% to 82.8%. Its yearly
 coverage is 79.8% against a nominal 80%.
 
@@ -249,12 +271,15 @@ are days no recent window resembles, and a rule that learns from the last few we
 construction. An adaptive calibration narrows the gap that a holiday opens; it does not close it.
 That is a job for a covariate (Part 3's holiday flag), not for a wider band.
 
-**The typical day pays a little for it.** The skill against the uncorrected model, which is a
-geometric mean over days, is negative for every variant, −4 to −7%: on an ordinary day a wider
-band costs some pinball loss, and only the bad days give it back. The mean WQL, which the bad days
-dominate, does not move (0.0386 to 0.0388 against 0.0388), and in the worst tenth of the
-zero-shot days the calibrated loss is lower (0.145 with ACI against 0.152). That is the trade a
-reserve-margin decision wants, and a single average would hide it.
+**The typical day pays a little for it.** This is Part 2's pair of readings again. The skill
+against the uncorrected model on a typical window is negative for every variant, −4 to −7%: on an
+ordinary day a wider band costs some pinball loss, and only the bad days give it back. The total
+error of the year does not move: it is within about half a percent of the uncorrected model's for all
+four variants (between −0.1% and +0.4%, each with a 95% interval that contains zero, in
+`09_conformal_summary.csv`; WQL 0.0386 to 0.0388 against 0.0388). On the tenth of the windows
+where the zero-shot loss was highest (37 of them), the calibrated loss is lower (0.145 with ACI
+against 0.152 on the same windows). That is the trade a reserve-margin decision wants, and a single
+average would hide it.
 
 **Which one to deploy.** ACI, for a single series with a daily cadence: it has the most even
 coverage, the smallest cost on the typical day, and one line of state to carry (the current miss
@@ -262,10 +287,10 @@ rate per band). The rolling pool is the choice when the series changes regime an
 misleading rather than merely stale. The static correction remains the right first step, because
 the adaptive ones start from it, and because it is the only one that needs no feedback loop at all.
 
-> **Without the repository.** A static calibration is twenty lines: for each horizon step, the
-> scores `max(lower − y, y − upper)` over the calibration forecasts, their `ceil((n + 1)(1 − α)) / n`
-> empirical quantile, and that number added to `upper` and subtracted from `lower`. ACI adds one
-> more line after each resolved day: `α_t += γ · (α − observed miss rate)`.
+> **Without the repository.** ACI adds one line to the static recipe of section 3, after each
+> resolved day: `α_t += γ · (α − miss_t)`, where `α` is the fixed target miss rate (0.2 for an
+> 80% band) and `miss_t` the share of that day's hours that fell outside the band. The quantile
+> of the scores is then taken at `1 − α_t`.
 
 ## Cheat sheet
 
@@ -282,9 +307,9 @@ the adaptive ones start from it, and because it is the only one that needs no fe
 
 ## What's next
 
-Everything so far has been one hourly series, one day ahead. Part 7 leaves that setting in three
-directions (totals and daily data, a panel of a thousand stores, and the model's embeddings) and
-closes the series with what moved the number, in order.
+Everything so far has been one hourly series, one day ahead. Part 7 leaves that setting in four
+directions (the total of a day, daily data, a panel of a thousand stores, and the model's
+embeddings) and closes the series with what moved the number, in order.
 
 ---
 

@@ -92,6 +92,12 @@ def interval(row: pd.Series) -> str:
     return f"{spct(row['skill'])}% [{spct(row['ci_low'])}, {spct(row['ci_high'])}]"
 
 
+def total_interval(row: pd.Series) -> str:
+    """``+12.9% [+6.0, +19.1]``: the same row read on the total error."""
+    low, high = spct(row["total_ci_low"]), spct(row["total_ci_high"])
+    return f"{spct(row['total_skill'])}% [{low}, {high}]"
+
+
 # --- Expected rows, article by article --------------------------------------------------------
 
 
@@ -109,8 +115,37 @@ class Results:
         return self._cache[name]
 
 
+def reading(r: Results, metrics: str, model: str, baseline: str) -> pd.Series:
+    """One comparison of ``12_two_readings.csv``: typical-window and total-error skill."""
+    table = r("12_two_readings")
+    rows = table[
+        (table["metrics"] == metrics) & (table["model"] == model) & (table["baseline"] == baseline)
+    ]
+    if len(rows) != 1:
+        raise KeyError(f"12_two_readings has {len(rows)} rows for {model!r} vs {baseline!r}.")
+    return rows.iloc[0]
+
+
 def article_1(r: Results) -> Iterator[str]:
     """First forecast and the messy-data table."""
+    scenarios = r("00_messy_data_scenarios").pivot_table(
+        index="window", columns="scenario", values="WQL"
+    )
+    clean = scenarios["clean"]
+    yield (
+        f"({half_up(clean.std(), 3)} against {half_up(clean.mean(), 3)} over {len(clean)} windows)"
+    )
+    dropped = np.log(scenarios["rows_dropped_freq"] / clean)
+    easy = clean <= clean.median()
+    yield (
+        f"multiplied by {half_up(np.exp(dropped[easy].mean()), 1)}, and in the other half by "
+        f"{half_up(np.exp(dropped[~easy].mean()), 1)}"
+    )
+    spike = scenarios["spike"] / clean
+    yield f"half of them lose less than {half_up(100 * (spike.median() - 1), 0)}%"
+    yield f"multiplies the loss by {half_up(spike.max(), 1)}"
+    tails = r("02_coverage").pivot_table(index="model", columns="nominal", values="achieved")
+    yield f"interval holds {pct(tails.loc['chronos-2', 0.98])}% of the time"
     first = r("01_first_forecast_metrics").iloc[0]
     mae = f"{half_up(first['MAE'], 0)} MW ({pct(first['WAPE'])}% of mean load)"
     yield table_row("MAE of the median", mae)
@@ -164,15 +199,51 @@ def article_2(r: Results) -> Iterator[str]:
             cell = f"{pct(k['skill'])}% [{pct(k['ci_low'])}, {pct(k['ci_high'])}]"
         else:
             cell = interval(k)
+        if k["total_skill"] > 0:
+            low, high = pct(k["total_ci_low"]), pct(k["total_ci_high"])
+            total = f"{pct(k['total_skill'])}% [{low}, {high}]"
+        else:
+            total = total_interval(k)
         yield (
             f"| {label} | {half_up(s['WQL'], 4)} | {half_up(s['MASE'], 3)} | {pct(s['WAPE'])}% "
-            f"| {cell} | {pct(k['win_rate'], 0)}% |"
+            f"| {cell} | {total} | {pct(k['win_rate'], 0)}% |"
         )
     naive = summary.loc["seasonal_naive"]
     yield (
         f"| seasonal_naive (24 h) | {half_up(naive['WQL'], 4)} | {half_up(naive['MASE'], 3)} "
-        f"| {pct(naive['WAPE'])}% | 0.0% | n/a |"
+        f"| {pct(naive['WAPE'])}% | 0.0% | 0.0% | n/a |"
     )
+    chronos = skill.loc["chronos-2"]
+    yield f"its loss is {pct(chronos['total_skill'], 0)}% lower"
+    yield (
+        f"{pct(chronos['skill'])}% below the seasonal naive on a typical day and "
+        f"{pct(chronos['total_skill'])}% below it over the year"
+    )
+    spread = r("02_error_concentration").set_index("model")
+    yield (
+        f"holds {pct(spread.loc['chronos-2', 'worst_tenth_share'], 0)}% of its loss for the year "
+        f"({pct(spread.loc['seasonal_naive', 'worst_tenth_share'], 0)}% for the naive"
+    )
+    medians = spread["median_WQL"]
+    assert half_up(medians["chronos-2"], 3) == half_up(medians["chronos-bolt"], 3)
+    yield f"a WQL of {half_up(medians['chronos-2'], 3)} for both"
+    lags = r("02_ratio_autocorrelation").set_index("lag_days")["autocorrelation"]
+    yield f"where the correlation has fallen to {half_up(lags[5], 2)}"
+    ets = skill.loc["auto_ets"]
+    yield f"(On the total it is {pct(-ets['total_skill'], 0)}% worse"
+    yield (
+        f"({half_up(lags[1], 2)} between adjacent windows here, {half_up(lags[3], 2)} three days "
+        f"apart, {half_up(lags[7], 2)} a week apart)"
+    )
+    daily = r("02_backtest_metrics").pivot_table(index="cutoff", columns="model", values="WQL")
+    worst = daily.nlargest(3, "chronos-2")
+    ours = [half_up(value, 3) for value in worst["chronos-2"]]
+    theirs = [half_up(value, 3) for value in worst["chronos-bolt"]]
+    yield (
+        f"its WQL is {ours[0]}, {ours[1]} and {ours[2]}, and Bolt's on the same days is "
+        f"{theirs[0]}, {theirs[1]} and {theirs[2]}"
+    )
+    yield f"({ours[0]} against {half_up(worst['seasonal_naive'].iloc[0], 3)})"
     coverage = r("02_coverage").pivot_table(index="model", columns="nominal", values="achieved")
     for model in ("chronos-2", "chronos-bolt", "mstl", "seasonal_naive", "auto_ets"):
         yield f"| {model} | {pct(coverage.loc[model, 0.8])}% | {pct(coverage.loc[model, 0.98])}% |"
@@ -188,10 +259,20 @@ def article_2(r: Results) -> Iterator[str]:
         f"Chronos-2's skill over Bolt is {spct(versus_bolt['skill'])}% with an interval of "
         f"[{spct(versus_bolt['ci_low'])}, {spct(versus_bolt['ci_high'])}]"
     )
-    versus_mstl = _skill_row(backtest, "chronos-2", "mstl")
+    head_to_head = r("02_head_to_head").iloc[0]
+    assert abs(head_to_head["skill"] - versus_bolt["skill"]) < 1e-9
+    yield f"loss is {pct(-head_to_head['total_skill'])}% higher"
     yield (
-        f"{pct(versus_mstl['skill'], 0)}% lower than MSTL's "
-        f"[{pct(versus_mstl['ci_low'])}, {pct(versus_mstl['ci_high'])}]"
+        f"than Bolt's, with an interval of [{pct(-head_to_head['total_ci_high'])}, "
+        f"{pct(-head_to_head['total_ci_low'])}]"
+    )
+    wins = (daily["chronos-2"] < daily["chronos-bolt"]).sum()
+    yield f"the lower loss in {int(wins)} of {len(daily)} windows"
+    mstl = reading(r, "02_backtest_metrics", "chronos-2", "mstl")
+    yield (
+        f"{pct(mstl['skill'])}% lower than MSTL's on a typical window "
+        f"[{pct(mstl['ci_low'])}, {pct(mstl['ci_high'])}] and {pct(mstl['total_skill'])}% lower "
+        f"over the year [{pct(mstl['total_ci_low'])}, {pct(mstl['total_ci_high'])}]"
     )
     sweep = r("03_context_sweep").pivot_table(index="context", columns="horizon", values="skill")
     for context, row in sweep.iterrows():
@@ -210,6 +291,10 @@ def article_2(r: Results) -> Iterator[str]:
     synth = r("02_contamination").set_index("model").loc["chronos-2-synth"]
     yield f"{pct(synth['skill'])}% worse"
     yield f"[{pct(synth['ci_high'])}%, {pct(synth['ci_low'])}%]"
+    yield (
+        f"({pct(synth['total_skill'])}% worse, with an interval of "
+        f"[{negative(-100 * synth['total_ci_high'], 1)}%, {pct(synth['total_ci_low'])}%])"
+    )
     joint = r("04_multivariate_skill").set_index("target")
     yield f"load changes by {interval(joint.loc['load_actual'])}"
     yield f"price by {interval(joint.loc['price_actual'])}"
@@ -240,15 +325,24 @@ def article_3(r: Results) -> Iterator[str]:
         yield table_row(half_up(epf_wql[arm], 4), interval(epf.loc[arm]), wins)
     coverage = r("05_epf_de_metrics").groupby("model")["coverage_80"].mean()
     yield (
-        f"going {pct(coverage['univariate'])}%, then {pct(coverage['past_only'])}%, "
-        f"then {pct(coverage['known_future'])}%"
+        f"from {pct(coverage['univariate'])}% to {pct(coverage['past_only'])}% to "
+        f"{pct(coverage['known_future'])}%"
+    )
+    yield (
+        f"on a typical window, {pct(epf.loc['known_future', 'skill'])}% with it against "
+        f"{pct(epf.loc['past_only', 'skill'])}% with their history alone"
+    )
+    yield (
+        f"falls by {pct(epf.loc['known_future', 'total_skill'])}% with the covariates' future "
+        f"and by {pct(epf.loc['past_only', 'total_skill'])}% with their history"
     )
     wql = r("05_price_ladder_metrics").groupby("model")["WQL"].mean()
     ladder = r("05_price_ladder_skill").set_index("model")
-    yield f"| {half_up(wql['none'], 4)} | n/a | n/a |"
+    yield f"| {half_up(wql['none'], 4)} | n/a | n/a | n/a |"
     for rung in ("+calendar", "+TSO forecasts", "+past generation", "TSO forecasts, no calendar"):
-        wins = f"{pct(ladder.loc[rung, 'win_rate'], 0)}%"
-        yield table_row(half_up(wql[rung], 4), interval(ladder.loc[rung]), wins)
+        row = ladder.loc[rung]
+        wins = f"{pct(row['win_rate'], 0)}%"
+        yield table_row(half_up(wql[rung], 4), interval(row), total_interval(row), wins)
     ladder_metrics = r("05_price_ladder_metrics")
     no_calendar = _skill_row(ladder_metrics, "TSO forecasts, no calendar", "+TSO forecasts")
     yield (
@@ -256,40 +350,48 @@ def article_3(r: Results) -> Iterator[str]:
         f"[{spct(no_calendar['ci_low'])}, {spct(no_calendar['ci_high'])}]"
     )
     generation = _skill_row(ladder_metrics, "+past generation", "TSO forecasts, no calendar")
-    yield f"the difference is {interval(generation)}"
+    yield f"generation adds {interval(generation)}"
+    best = ladder.loc["TSO forecasts, no calendar"]
+    yield (
+        f"{pct(best['total_skill'])}% [{spct(best['total_ci_low'])}, "
+        f"{spct(best['total_ci_high'])}] off the year's total"
+    )
+    yield (
+        f"(WQL {half_up(wql['+past generation'], 4)} against "
+        f"{half_up(wql['TSO forecasts, no calendar'], 4)})"
+    )
     columns = r("05_price_columns").set_index("measure")["value"]
-    yield f"a steady {half_up(columns['actual_minus_omie_mean'], 1)} EUR/MWh above it"
-    yield f"(standard deviation {half_up(columns['actual_minus_omie_std'], 1)})"
-    yield f"a correlation of {half_up(columns['actual_vs_omie_correlation'], 3)}"
+    yield f"a steady {half_up(columns['actual_minus_omie_mean'], 1)} EUR/MWh above"
+    yield (
+        f"(standard deviation {half_up(columns['actual_minus_omie_std'], 1)}, correlation "
+        f"{half_up(columns['actual_vs_omie_correlation'], 3)})"
+    )
     yield f"on {int(columns['days_day_ahead_column_equal_all_hours'])} days of 2018"
     yield f"of another {int(columns['days_day_ahead_column_equal_no_hour'])}"
     holidays = r("05_holiday_windows").set_index(["model", "windows"])
-    for arm in ("+holiday flag only", "+calendar"):
-        special = holidays.loc[(arm, "holiday windows")]
-        wins = round(special["win_rate"] * special["n_units"])
-        yield (
-            f"| {arm} | {interval(holidays.loc[(arm, 'all windows')])} "
-            f"| {interval(special)}, wins {wins} of {int(special['n_units'])} "
-            f"| {interval(holidays.loc[(arm, 'ordinary windows')])} |"
-        )
+    special = holidays.loc[("+holiday flag only", "holiday windows")]
+    wins = round(special["win_rate"] * special["n_units"])
+    yield (
+        f"{pct(special['skill'])}% off the quantile loss [{spct(special['ci_low'])}, "
+        f"{spct(special['ci_high'])}] and wins {wins} of the {int(special['n_units'])}"
+    )
+    yield f"({interval(holidays.loc[('+holiday flag only', 'ordinary windows')])})"
     tso, observed = ladder.loc["+TSO forecasts"], ladder.loc["LEAK: observed as known"]
     target = ladder.loc["LEAK: the target itself"]
-    yield f"| +TSO forecasts (no leak) | {spct(tso['skill'])}% | {pct(tso['win_rate'], 0)}% |"
+    yield f"| +TSO forecasts (no leak) | {interval(tso)} | {pct(tso['win_rate'], 0)}% |"
     yield (
-        f"| LEAK: observed values as known-future | {spct(observed['skill'])}% "
+        f"| LEAK: observed values as known-future | {interval(observed)} "
         f"| {pct(observed['win_rate'], 0)}% |"
     )
     yield (
         f"| LEAK: the target itself as known-future | {interval(target)} "
         f"| {pct(target['win_rate'], 0)}% |"
     )
-    weekday_wql = r("05_categorical_metrics").groupby("model")["WQL"].mean()
     weekday = r("05_categorical_skill").set_index("model")
-    for arm, label in (
-        ("+weekday as a number", "a number, 0 to 6"),
-        ("+weekday as a category", "a category, seven labels"),
-    ):
-        yield table_row(label, half_up(weekday_wql[arm], 4), interval(weekday.loc[arm]))
+    yield (
+        f"({interval(weekday.loc['+weekday as a number'])} as a number, "
+        f"{interval(weekday.loc['+weekday as a category'])} as a category)"
+    )
     load = r("05_operator_metrics").groupby("model")[["WQL", "WAPE", "coverage_80"]].mean()
     point = r("05_operator_point_skill").set_index("model")
     arms = {
@@ -351,7 +453,7 @@ def article_3(r: Results) -> Iterator[str]:
     whole = context.loc["whole context", "mean"]
     older = context.loc[["lags 25-168", "lags 169-672", "lags 673+"], "mean"].sum()
     yield f"holds {pct(context.loc['lags 1-24', 'mean'] / whole, 0)}% of the total"
-    yield f"and hold {pct(context.loc['lags 673+', 'mean'] / whole, 0)}%"
+    yield f"context, hold {pct(context.loc['lags 673+', 'mean'] / whole, 0)}%"
     yield f"the three older segments hold {pct(older / whole, 0)}% of"
     hidden = r("06_occlusion_summary").set_index("first_lag")
     last, rest = hidden.loc[1], hidden.drop(index=1)["mean"].max()
@@ -373,10 +475,9 @@ def article_3(r: Results) -> Iterator[str]:
     reached = partial.loc[("known for 12 h", "13-24"), "skill"]
     yield f"by {spct(reached).lstrip('+')}% with an interval"
     official = r("05_epf_de_fev_check").set_index("metric")["fev"]
-    yield (
-        f"SQL {half_up(official['SQL'], 4)}, WQL {half_up(official['WQL'], 4)}, "
-        f"MASE {half_up(official['MASE'], 4)}, WAPE {half_up(official['WAPE'], 4)}"
-    )
+    yield f"Its WQL, {half_up(official['WQL'], 4)},"
+    check = r("05_epf_de_fev_check").set_index("metric")
+    assert (check["fev"] - check["harness"]).abs().max() < 1e-6, "fev and the harness disagree"
     price = r("06_what_if").groupby("wind_factor")["predictions"].mean()
     yield f"| Operator's forecast | {half_up(price[1.0], 2)} EUR/MWh |"
     yield f"| Wind × 1.5 | {half_up(price[1.5], 2)} ({signed(price[1.5] - price[1.0], 2)}) |"
@@ -420,9 +521,18 @@ def article_4(r: Results) -> Iterator[str]:
         )
     single = r("07_lora_run_skill")
     single = single.loc[single["model"] != "zero-shot", "skill"]
+    assert ranks["skill"].max() - ranks["skill"].min() < 0.01, "the ranks differ by a point"
     yield (
-        f"differ by {half_up(100 * (ranks['skill'].max() - ranks['skill'].min()), 1)} points; two "
-        f"single runs can differ by {half_up(100 * (single.max() - single.min()), 1)}"
+        f"differ by less than a point; single runs, across ranks and seeds, span "
+        f"{half_up(100 * (single.max() - single.min()), 1)} points"
+    )
+    yield f"barely moves it ({pct(ranks.loc['lora_r4', 'coverage_80'])}%)"
+    budget = "4,000 steps, lr 1e-4"
+    chosen_validation = reading(r, "07_budget_validation_metrics", budget, "zero-shot")
+    chosen_test = reading(r, "07_budget_test_metrics", budget, "zero-shot")
+    yield (
+        f"goes from {spct(chosen_validation['total_skill'])}% to "
+        f"{spct(chosen_test['total_skill'])}%"
     )
     validation = r("07_budget_validation").set_index("candidate")
     test = r("07_budget_test").set_index("candidate")
@@ -447,7 +557,7 @@ def article_4(r: Results) -> Iterator[str]:
             half_up(k["WQL"], 4),
             interval(k),
             _runs(k),
-            f"{spct(k['mean_change'])}%",
+            total_interval(reading(r, "08_comparison_metrics", run, "zero-shot")),
             f"{pct(k['coverage_80'])}%",
         )
         yield table_row(
@@ -553,14 +663,93 @@ def article_5(r: Results) -> Iterator[str]:
     )
     yield (
         f"| chronos-2-small | 27.9M | {half_up(tiny['WQL'], 4)} | {pct(tiny['coverage_80'])}% "
-        f"| {interval(k)} | {pct(k['win_rate'], 0)}% "
+        f"| {interval(k)} | {total_interval(k)} "
         f"| {pct(_skill_against(small, 'chronos-2-small', naive))}% |"
+    )
+    base_id = "amazon/chronos-2"
+    by_window = small.pivot_table(index="cutoff", columns="model", values="WQL")
+    thirds = pd.qcut(naive.reindex(by_window.index).rank(method="first"), 3, labels=False)
+    sums = by_window.groupby(thirds).sum()
+    extra = 100 * (sums["chronos-2-small"] / sums["chronos-2"] - 1)
+    rest = sorted(half_up(value, 0) for value in extra.iloc[1:])
+    held = sums["chronos-2"].iloc[1:].sum() / sums["chronos-2"].sum()
+    yield (
+        f"is {half_up(extra.iloc[0], 0)}% higher on the easiest third and {rest[0]}% to "
+        f"{rest[1]}% higher on the other two, which hold {pct(held, 0)}% of the year's loss"
+    )
+
+    def base_at_2048(name: str) -> pd.DataFrame:
+        bench = r(name)
+        return bench[(bench["model"] == base_id) & (bench["context_length"] == 2048)]
+
+    memory = [
+        half_up(base_at_2048(name).set_index("batch_size").loc[1, "peak_vram_mb"], 0)
+        for name in ("bench_latency_cuda", "bench_latency_cuda_bf16")
+    ]
+    yield f"falls from {memory[0]} MB to {memory[1]} MB"
+    rates = r("09_hosting_rates").set_index("instance")["usd_per_hour"]
+    lead = base_at_2048("bench_latency_cuda")["series_per_second"].max()
+    lead /= base_at_2048("bench_latency_cpu")["series_per_second"].max()
+    needed = {name: rates[name] / rates["ml.c7i.2xlarge"] / lead for name in rates.index}
+    gpu_rows = [name for name in rates.index if name.startswith("ml.g")]
+    shares = sorted((needed[name], name) for name in gpu_rows)
+    assert len(shares) == 4, "the cost table no longer has four GPU rows"
+    yield (
+        f"{pct(shares[0][0], 0)}% for {shares[0][1]}, {pct(shares[1][0], 0)}% for {shares[1][1]}, "
+        f"{pct(shares[2][0], 0)}% for {shares[2][1]} and {pct(shares[3][0], 0)}% for {shares[3][1]}"
+    )
+    yield f"unrounded hourly rate ({half_up(rates['ml.g6.xlarge'], 4)} for ml.g6.xlarge)"
+    eight_vcpu = rates["ml.g5.2xlarge"] / rates["ml.c7i.2xlarge"]
+    yield f"the same card with eight vCPUs of its own, costs {half_up(eight_vcpu, 2)}×"
+
+    def batching(name: str, context: int) -> float:
+        bench = r(name)
+        speed = bench[(bench["model"] == base_id) & (bench["context_length"] == context)]
+        speed = speed.set_index("batch_size")["series_per_second"]
+        return float(speed[128] / speed[1])
+
+    yield (
+        f"by {half_up(batching('bench_latency_cuda', 2048), 1)}× at 2,048 hours of context, and "
+        f"by {half_up(batching('bench_latency_cuda', 512), 1)}× at"
+    )
+    yield (
+        f"gives {half_up(batching('bench_latency_cpu', 2048), 1)}× at 2,048 hours and "
+        f"{half_up(batching('bench_latency_cpu', 512), 1)}× at 512"
+    )
+    slow_side = r("bench_latency_cpu")
+    slow_side = slow_side[slow_side["context_length"] == 2048]
+    by_model = slow_side.pivot_table(
+        index="batch_size", columns="model", values="series_per_second"
+    )
+    cpu_lead = by_model["autogluon/chronos-2-small"] / by_model[base_id]
+    assert by_model[base_id].idxmax() == 32, "the best CPU batch is no longer 32"
+    yield f"sits {half_up(cpu_lead.min(), 1)} to {half_up(cpu_lead.max(), 1)} times above"
+    gpu = r("bench_latency_cuda")
+    ratio_at = {
+        batch: gpu[(gpu["context_length"] == 2048) & (gpu["batch_size"] == batch)]
+        .set_index("model")["series_per_second"]
+        .pipe(lambda speed: speed["autogluon/chronos-2-small"] / speed[base_id])
+        for batch in (32, 128)
+    }
+    yield f"({half_up(ratio_at[32], 1)}× at 32 series, {half_up(ratio_at[128], 1)}× at 128)"
+    gpu = gpu[(gpu["context_length"] == 2048) & (gpu["batch_size"] == 1)]
+    gpu = gpu.set_index("model")["series_per_second"]
+    lead = gpu["autogluon/chronos-2-small"] / gpu["amazon/chronos-2"]
+    yield f"its lead on the GPU is {half_up(lead, 1)}×"
+    half_precision = r("bench_variants_skill").set_index("model").loc["chronos-2-bf16"]
+    assert spct(half_precision["total_skill"]) == "+0.0", "the bfloat16 total no longer rounds to 0"
+    yield f"the typical window reads {spct(half_precision['skill'])}% and the total rounds to zero"
+    stability = r("bench_stability")
+    moved = stability["rerun_vs_median"].abs().groupby(stability["device"]).max()
+    yield (
+        f"about {half_up(100 * moved['cuda'], 0)}% on a GPU, or "
+        f"{half_up(100 * moved['cpu'], 0)}% on a CPU"
     )
     half = means.loc["chronos-2-bf16"]
     k16 = r("bench_variants_skill").set_index("model").loc["chronos-2-bf16"]
     yield (
         f"| chronos-2, bfloat16 | 119.5M | {half_up(half['WQL'], 4)} "
-        f"| {pct(half['coverage_80'])}% | {interval(k16)} | {pct(k16['win_rate'], 0)}% "
+        f"| {pct(half['coverage_80'])}% | {interval(k16)} | {total_interval(k16)} "
         f"| {pct(_skill_against(small, 'chronos-2-bf16', naive))}% |"
     )
     for precision, name in (
@@ -649,7 +838,30 @@ def article_6(r: Results) -> Iterator[str]:
             f"{pct(w['coverage'])}% ({month})",
         )
     tail = summary["WQL_worst_decile"]
-    yield f"({half_up(tail['conformal_aci'], 3)} with ACI against {half_up(tail['zero-shot'], 3)})"
+    yield (
+        f"({half_up(tail['conformal_aci'], 3)} with ACI against "
+        f"{half_up(tail['zero-shot'], 3)} on the same windows)"
+    )
+    yield f"highest ({int(summary.loc['zero-shot', 'n_worst_windows'])} of them)"
+    variants = summary.index[summary.index != "zero-shot"]
+    totals = summary.loc[variants, "total_skill"]
+    yield f"(between {spct(totals.min())}% and {spct(totals.max())}%, each with a 95% interval"
+    aci = months[months["model"] == "conformal_aci"].set_index("period")["coverage"]
+    low, high = pd.Period(aci.idxmin(), "M"), pd.Period(aci.idxmax(), "M")
+    yield (
+        f"between {pct(aci.min())}% ({low.strftime('%B')}) and "
+        f"{pct(aci.max())}% ({high.strftime('%B')})"
+    )
+    yield f"Its mean over the year is {pct(wape.mean(), 2)}%"
+    yield f"has a median of {pct(cov.median())}% and drops to {pct(cov.min(), 0)}% in winter"
+    yield f"Its mean is {pct(cov.mean())}% over the"
+    assert summary.loc[variants, "total_skill"].abs().max() < 0.005, "a total moved by 0.5%"
+    assert (summary.loc[variants, "total_ci_low"] < 0).all()
+    assert (summary.loc[variants, "total_ci_high"] > 0).all()
+    yield f"over the {int(cov.notna().sum())} cutoffs that have a full four-week window"
+    promised = r("07_budget_validation").set_index("candidate").loc["4,000 steps, lr 1e-4"]
+    delivered = r("08_comparison_skill").set_index("model").loc["lora_tuned"]
+    yield f"({pct(promised['skill'])}% there, {pct(delivered['skill'])}% on the test year)"
     monthly = months.pivot_table(index="period", columns="model", values="coverage")
     january, february = monthly.loc["2018-01"], monthly.loc["2018-02"]
     yield (
@@ -662,7 +874,7 @@ def article_6(r: Results) -> Iterator[str]:
         monthly[name] for name in ("conformal_aci", "conformal_additive", "zero-shot")
     )
     yield (
-        f"ACI stays between {pct(aci.min())}% and {pct(aci.max())}%, where the static correction "
+        f"{pct(aci.max())}% ({high.strftime('%B')}), where the static correction "
         f"ran from {pct(static.min())}% to {pct(static.max())}% and the uncorrected model from "
         f"{pct(raw.min())}% to {pct(raw.max())}%"
     )
@@ -716,6 +928,10 @@ def article_7(r: Results) -> Iterator[str]:
     paired = r("10_paired_skill").set_index(["comparison", "model"])
     summed = paired.loc[("tomorrow's total", "hourly quantiles, summed")]
     yield f"a WQL {_plain_interval(summed)} lower"
+    yield (
+        f"{pct(summed['total_skill'])}% [{pct(summed['total_ci_low'])}, "
+        f"{pct(summed['total_ci_high'])}] lower over the year"
+    )
     calibrated = r("10_total_calibration_summary").set_index("model")
     labels = {
         "hourly quantiles, summed": "hourly quantiles summed, as they come",
@@ -754,7 +970,8 @@ def article_7(r: Results) -> Iterator[str]:
         "n/a",
     )
     direct = paired.loc[("a week of totals", "daily series, forecast directly")]
-    yield f"ahead by {interval(direct)}"
+    yield f"by {interval(direct)} on a typical window"
+    yield f"by {total_interval(direct)} on the total"
     panel = r("10_panel_summary").set_index("model")
     labels = {
         "history only": "history only",
@@ -814,7 +1031,20 @@ def article_7(r: Results) -> Iterator[str]:
         f"known covariates {half_up(speed['+known covariates'], 0)}"
     )
     yield f"({interval(past)}, better on {pct(past['win_rate'], 0)}% of the stores)"
-    yield f"({interval(cross)}, better on {pct(cross['win_rate'], 0)}% of the stores)"
+    yield (
+        f"({interval(cross)} per store, better on {pct(cross['win_rate'], 0)}% of them, and "
+        f"{spct(cross['total_skill'])}%"
+    )
+    yield f"the loss falls by {pct(known['total_skill'])}%"
+    static = r("10_panel_static_skill").set_index("model")
+    alone = static.loc["+known covariates and store attributes"]
+    shared = static.loc["+known covariates and store attributes, cross-learning"]
+    yield (
+        f"by {pct(-alone['skill'])}% [{pct(-alone['ci_high'])}, {pct(-alone['ci_low'])}] per store"
+    )
+    yield (
+        f"by {pct(-shared['skill'])}% [{pct(-shared['ci_high'])}, {pct(-shared['ci_low'])}] when"
+    )
     probes = r("11_probe_accuracy").pivot_table(
         index="representation", columns="task", values="accuracy", sort=False
     )
@@ -866,7 +1096,8 @@ def article_7(r: Results) -> Iterator[str]:
         f"({half_up(neighbors['solar_forecast_tso'], 3)})"
     )
     for _, row in r("12_series_summary").iterrows():
-        yield table_row(row["lever"], row["effect"], row["measured_as"], row["part"])
+        total = "n/a" if pd.isna(row["total"]) else row["total"]
+        yield table_row(row["lever"], row["effect"], total, row["measured_as"], row["part"])
     backtest = r("02_backtest_metrics")
     wape = backtest.loc[backtest["model"] == "chronos-2", "WAPE"].mean()
     best = analog.loc["analogs: embedding (forecast)", "WAPE"]
@@ -877,7 +1108,8 @@ def article_7(r: Results) -> Iterator[str]:
     yield f"({interval(joint.loc['load_actual'])})"
     yield f"({interval(ladder.loc['+calendar'])})"
     yield f"({interval(weekday.loc['+weekday as a category'])})"
-    yield f"({interval(_skill_row(backtest, 'chronos-2', 'chronos-bolt'))})"
+    bolt = reading(r, "02_backtest_metrics", "chronos-2", "chronos-bolt")
+    yield f"{interval(bolt)} on a typical day and {pct(-bolt['total_skill'])}% behind"
 
 
 EXPECTED: dict[str, Callable[[Results], Iterator[str]]] = {

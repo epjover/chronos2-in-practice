@@ -1,3 +1,3 @@
-model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length
-chronos-2,chronos-2,WQL,0.0,0.0,0.0,0.5,365,7
-chronos-2-synth,chronos-2,WQL,-0.167795963693125,-0.25176585434353754,-0.08963209438632286,0.4,365,7
+model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length,total_skill,total_ci_low,total_ci_high
+chronos-2,chronos-2,WQL,0.0,0.0,0.0,0.5,365,7,0.0,0.0,0.0
+chronos-2-synth,chronos-2,WQL,-0.167795963693125,-0.25176585434353754,-0.08963209438632286,0.4,365,7,-0.03833070215331036,-0.11415445378958333,0.025645308843057865

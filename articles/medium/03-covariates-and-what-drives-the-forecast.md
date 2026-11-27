@@ -40,7 +40,8 @@ foundation model does and does not do with a nearly perfect input.
 > series' level: 0.039 reads as 3.9%. **Skill** is one minus the geometric mean, over windows, of
 > a model's WQL divided by a reference's: +10% is 10% less error on a typical window. **Total**
 > is the same comparison on the summed error of all the windows, where the bad days weigh more.
-> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target. A
+> **Coverage** is how often the actual falls inside the 80% interval, so 80% is the target.
+> **WAPE** is the absolute error of the median forecast as a share of the actual values. A
 > **window** is one forecast origin of the backtest, and the brackets are 95% bootstrap intervals
 > over windows.
 

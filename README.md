@@ -208,7 +208,8 @@ For `07` and `08`, pick a GPU runtime first (Runtime > Change runtime type > T4 
 │   ├── check_price_columns.py  # compares the dataset's price columns with the market operator's file
 │   ├── fetch_cloud_prices.py  # AWS Price List API -> data/reference/cloud_prices.csv
 │   ├── cost_table.py       # joins measured throughput with published rates
-│   └── series_summary.py   # the one-page table and the decision path of part 7, from results/
+│   └── series_summary.py   # the one-page table, the two readings of every comparison and the
+│                           #   decision path of part 7, from results/
 ├── tests/                  # pytest suite
 ├── pyproject.toml
 └── uv.lock
@@ -232,6 +233,25 @@ cloud instance, and reports the rate-only break-even ratio separately for that r
 The decision path that closes part 7 follows the same rule: `scripts/series_summary.py` reads
 the sentence under each step from the results files, so the figure cannot quote a number the
 experiments no longer support.
+
+### Two readings of every comparison
+
+When two models are compared over many forecast windows, the series reports the comparison
+twice, and `skill_table(..., aggregate="both")` in `c2p.eval` computes both from the same
+per-window errors:
+
+- **Skill (the typical window)**: one minus the geometric mean of the per-window error ratios.
+  Every window counts the same, so a model that is better on most days scores well.
+- **Total (the error of the whole period)**: one minus the ratio of the summed errors. The
+  worst windows weigh in proportion to their size, as they do in a bill or a yearly report.
+
+They agree when the errors are spread evenly and part ways when a few windows carry much of the
+loss. On the Spanish load of 2018, Chronos-2 against Chronos-Bolt is the case where they point
+in opposite directions (Part 2). Both come with a block-bootstrap interval over the same blocks
+of windows. `results/12_two_readings.csv` holds the two readings of every comparison the
+articles quote, recomputed by `scripts/series_summary.py` from the per-window metrics that the
+notebooks saved, so it also covers the notebooks that train a model and are not rerun for a
+change in how a number is summarised.
 
 The one figure that shows no measurement is the architecture diagram of Part 1
 (`c2p.plots.architecture`): it describes the model. Even there the sizes it prints are read from
@@ -267,6 +287,10 @@ C2P_FAST_MODE=1 C2P_DEVICE=cpu uv run pytest --nbmake notebooks/ \
   --ignore-glob='notebooks/07_*' --ignore-glob='notebooks/08_*' \
   --nbmake-kernel=python3 --nbmake-timeout=900
 ```
+
+`tests/test_public_api.py` pins down what the package offers: every module of
+`c2p` declares `__all__`, and the notebooks, scripts and article code blocks may import only
+the names listed there.
 
 CI (`.github/workflows/ci.yml`) runs all of the above except the slow tests on every push and
 pull request to `main`. `--nbmake-kernel=python3` runs every notebook in the project environment,

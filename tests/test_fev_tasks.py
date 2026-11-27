@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -58,6 +59,37 @@ def test_series_frame_flattens_the_dataset() -> None:
     assert frame[ID_COL].unique().tolist() == ["DE"]
     assert frame[TIMESTAMP_COL].is_monotonic_increasing
     assert frame[TIMESTAMP_COL].dt.tz is None, "the schema uses timezone-naive timestamps"
+
+
+def test_series_frame_keeps_text_columns_as_categories() -> None:
+    class HolidayTask(FakeTask):
+        def load_full_dataset(self) -> list[dict]:
+            (record,) = super().load_full_dataset()
+            record["holiday"] = ["a" if hour % 24 == 0 else "0" for hour in range(HOURS)]
+            return [record]
+
+    task = HolidayTask(known_dynamic_columns=["load_forecast", "holiday"])
+    frame = task_series_frame(task)
+    assert frame["holiday"].dtype == "category"
+    assert sorted(frame["holiday"].cat.categories) == ["0", "a"]
+    assert frame["load_forecast"].dtype == "float64"
+
+
+def test_series_frame_repeats_the_static_columns_that_are_asked_for() -> None:
+    class StoreTask(FakeTask):
+        def load_full_dataset(self) -> list[dict]:
+            (record,) = super().load_full_dataset()
+            record.update({"store_type": "c", "distance": np.float32(1270.0), "interval": None})
+            return [record]
+
+    assert "store_type" not in task_series_frame(StoreTask()).columns
+    frame = task_series_frame(StoreTask(), static_columns=["store_type", "distance", "interval"])
+    assert list(frame.columns)[-3:] == ["store_type", "distance", "interval"]
+    assert frame["store_type"].dtype == "category" and (frame["store_type"] == "c").all()
+    assert frame["distance"].dtype == "float64" and (frame["distance"] == 1270.0).all()
+    assert (frame["interval"] == "missing").all()
+    with pytest.raises(ValueError, match="no static columns"):
+        task_series_frame(StoreTask(), static_columns=["region"])
 
 
 def test_backtest_config_copies_the_published_spec() -> None:

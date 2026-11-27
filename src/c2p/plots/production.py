@@ -23,17 +23,25 @@ import pandas as pd
 from matplotlib.axes import Axes
 
 from c2p.plotting import (
+    AQUA,
     BLUE,
     INK_PRIMARY,
     INK_SECONDARY,
     NEUTRAL_BAR,
+    ORANGE,
     _legend_above,
     _style_axes,
     set_axes_title,
     style_context,
 )
 
-__all__ = ["device_label", "plot_cost_per_million", "plot_coverage_by_month", "plot_throughput"]
+__all__ = [
+    "device_label",
+    "plot_cost_per_million",
+    "plot_coverage_by_month",
+    "plot_latency_spread",
+    "plot_throughput",
+]
 
 _CPU_COLOR = "#8c8b82"
 _GPU_COLOR = BLUE
@@ -52,7 +60,7 @@ def device_label(row: Mapping[str, object]) -> str:
     cpu = re.sub(r"\(R\)|\(TM\)|\d+th Gen |Processor", "", str(row.get("cpu") or ""))
     cpu = re.sub(r"\s+", " ", cpu).strip() or "CPU"
     threads = row.get("torch_threads")
-    suffix = f", {int(threads)} threads" if threads not in (None, "") else ""
+    suffix = f", {int(float(str(threads)))} threads" if threads not in (None, "") else ""
     return f"{model} on {cpu}{suffix}"
 
 
@@ -270,6 +278,8 @@ _MODEL_STYLES = {
     "zero-shot": (INK_SECONDARY, "solid"),
     "conformal_additive": (BLUE, "solid"),
     "conformal_scaled": (BLUE, (0, (4, 2))),
+    "conformal_rolling": (ORANGE, "solid"),
+    "conformal_aci": (AQUA, "solid"),
 }
 
 

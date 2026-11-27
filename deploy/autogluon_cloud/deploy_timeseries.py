@@ -26,7 +26,7 @@ Usage from the repository root::
 
 **This creates paid AWS resources.** ``--plan`` is the default and creates nothing; every mode
 that leaves something running prints the command that removes it. Nothing in this repository has
-been run against a real account: article 5's costs come from locally measured throughput and the
+been run against a real account: Part 5's costs come from locally measured throughput and the
 published rates in ``data/reference/cloud_prices.csv``.
 """
 

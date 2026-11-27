@@ -1,0 +1,2 @@
+context_wql_removed,covariates_wql_removed,ratio,ratio_ci_low,ratio_ci_high,share_resamples_covariates_positive,n_windows
+0.10844224230530161,0.0032235453306539673,33.64067546191501,15.091373495474611,177.61868293451136,0.98,365

@@ -11,6 +11,9 @@ from c2p.plots.evaluation import (
     coverage_long,
     plot_backtest_windows,
     plot_coverage,
+    plot_error_by_step,
+    plot_interval_bars,
+    plot_reliability,
     plot_skill_scores,
     plot_what_if,
     window_schedule,
@@ -113,6 +116,9 @@ def test_skill_scores_drops_the_baseline_and_labels_win_rates(skill: pd.DataFram
         assert labels[-1] == "chronos-2", "best model goes on top"
         annotations = " ".join(text.get_text() for text in ax.texts)
         assert "42.0  (91% of windows)" in annotations
+        by_store = plot_skill_scores(skill, units="stores")
+        assert "(91% of stores)" in " ".join(text.get_text() for text in by_store.texts)
+        plt.close(by_store.figure)
         assert "Skill score vs seasonal_naive" in ax.get_xlabel()
     finally:
         plt.close(ax.figure)
@@ -227,3 +233,76 @@ def test_what_if_rejects_bad_input() -> None:
         plot_what_if(frame.drop(columns="0.9"), baseline="Operator's forecast")
     with pytest.raises(ValueError, match="together"):
         plot_what_if(frame, baseline="Operator's forecast", target="price")
+
+
+def test_reliability_draws_the_gap_to_the_level_per_model() -> None:
+    levels = [0.1, 0.5, 0.9]
+    table = pd.DataFrame(
+        {
+            "model": ["chronos-2"] * 3 + ["seasonal_naive"] * 3,
+            "level": levels * 2,
+            "observed": [0.14, 0.5, 0.86, 0.1, 0.5, 0.9],
+        }
+    )
+    ax = plot_reliability(table, title="Narrow intervals")
+    narrow, calibrated = ax.get_lines()[:2]
+    assert narrow.get_ydata().tolist() == pytest.approx([4.0, 0.0, -4.0])
+    assert calibrated.get_ydata().tolist() == pytest.approx([0.0, 0.0, 0.0])
+    assert [text.get_text() for text in ax.get_legend().get_texts()] == [
+        "chronos-2",
+        "seasonal_naive",
+    ]
+    assert ax.get_title(loc="left") == "Narrow intervals"
+    plt.close(ax.figure)
+
+
+def test_error_by_step_draws_one_line_per_model_from_zero() -> None:
+    table = pd.DataFrame(
+        {
+            "model": ["chronos-2"] * 3 + ["mstl"] * 3,
+            "step": [1, 2, 3] * 2,
+            "WQL": [0.02, 0.03, 0.04, 0.05, 0.05, 0.06],
+            "WAPE": [0.03, 0.04, 0.05, 0.06, 0.06, 0.07],
+        }
+    )
+    ax = plot_error_by_step(table, metric="WAPE", xlabel="Hours ahead")
+    assert len(ax.get_lines()) == 2
+    assert ax.get_lines()[1].get_ydata().tolist() == [0.06, 0.06, 0.07]
+    assert ax.get_ylim()[0] == 0.0
+    assert ax.get_xlabel() == "Hours ahead"
+    plt.close(ax.figure)
+
+
+@pytest.mark.parametrize("plot", [plot_reliability, plot_error_by_step])
+def test_diagnostic_plots_reject_bad_frames(plot) -> None:
+    with pytest.raises(ValueError, match="missing the columns"):
+        plot(pd.DataFrame({"model": ["a"]}))
+    empty = pd.DataFrame({"model": [], "level": [], "observed": [], "step": [], "WQL": []})
+    with pytest.raises(ValueError, match="is empty"):
+        plot(empty)
+
+
+def test_interval_bars_sort_by_value_and_write_the_interval() -> None:
+    table = pd.DataFrame(
+        {
+            "player": ["calendar", "wind", "load"],
+            "mean": [0.002, -0.001, 0.004],
+            "ci_low": [-0.001, -0.003, 0.001],
+            "ci_high": [0.005, 0.001, 0.007],
+        }
+    )
+    ax = plot_interval_bars(table, label="player", highlight="load", xlabel="WQL removed")
+    assert [tick.get_text() for tick in ax.get_yticklabels()] == ["wind", "calendar", "load"]
+    annotations = [text.get_text() for text in ax.texts]
+    assert annotations[-1] == "+0.0040  [+0.0010, +0.0070]"
+    assert ax.get_yticklabels()[-1].get_fontweight() == "bold"
+    assert ax.get_xlabel() == "WQL removed"
+    plt.close(ax.figure)
+
+
+def test_interval_bars_reject_bad_frames() -> None:
+    with pytest.raises(ValueError, match="missing the columns"):
+        plot_interval_bars(pd.DataFrame({"player": ["a"]}), label="player")
+    empty = pd.DataFrame({"player": [], "mean": [], "ci_low": [], "ci_high": []})
+    with pytest.raises(ValueError, match="is empty"):
+        plot_interval_bars(empty, label="player")

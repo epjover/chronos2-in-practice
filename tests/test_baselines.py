@@ -20,8 +20,12 @@ from pandas.tseries.frequencies import to_offset
 from scipy.stats import norm
 
 from c2p.baselines import (
+    MSTL,
     AutoETS,
     ChronosBolt,
+    KnownUntil,
+    PublishedForecast,
+    ResidualForecaster,
     SeasonalNaive,
     _from_statsforecast,
     _interval_level,
@@ -173,8 +177,8 @@ def bolt_stub():
     return stub
 
 
-STAT_BASELINES = [SeasonalNaive(SEASON), AutoETS(SEASON)]
-STAT_IDS = ["seasonal_naive", "auto_ets"]
+STAT_BASELINES = [SeasonalNaive(SEASON), AutoETS(SEASON), MSTL((SEASON, 2 * SEASON))]
+STAT_IDS = ["seasonal_naive", "auto_ets", "mstl"]
 
 
 # --------------------------------------------------------------------------------------------
@@ -562,10 +566,12 @@ def test_auto_ets_validates_parameters(kwargs, match):
 def test_chronos2_forecaster_warns_on_cross_learning_over_many_series(chronos2_stub):
     kwargs = {"prediction_length": 6, "quantile_levels": EVAL_QUANTILES, "freq": FREQ}
     many = make_context(n_days=3, items=[f"s{i:03d}" for i in range(101)], nan_positions=())
+    model = Chronos2Forecaster(chronos2_stub, cross_learning=True)
     with pytest.warns(UserWarning, match="depends on how the frame is cut"):
-        Chronos2Forecaster(chronos2_stub, cross_learning=True).predict(many, **kwargs)
+        model.predict(many, **kwargs)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        model.predict(many, **kwargs)  # the second window of a backtest does not repeat it
         Chronos2Forecaster(chronos2_stub, cross_learning=False).predict(many, **kwargs)
         Chronos2Forecaster(chronos2_stub, cross_learning=True).predict(make_context(), **kwargs)
 
@@ -670,6 +676,11 @@ def test_chronos2_forecaster_rejects_other_pipelines(bolt_stub):
         Chronos2Forecaster(bolt_stub)
 
 
+def test_load_chronos2_rejects_an_unknown_precision_before_loading_weights():
+    with pytest.raises(ValueError, match="dtype must be one of"):
+        load_chronos2(dtype="float8")
+
+
 def test_load_chronos2_rejects_other_families_before_loading_weights(tmp_path):
     config = {"model_type": "t5", "chronos_pipeline_class": "ChronosBoltPipeline"}
     (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
@@ -703,11 +714,13 @@ def test_chronos_bolt_forecasts_each_target_from_its_own_column(bolt_stub):
 
 
 def test_chronos_bolt_warns_for_levels_outside_its_training_range(bolt_stub, caplog):
+    model = ChronosBolt(bolt_stub)
     with caplog.at_level(logging.WARNING, logger="c2p.models"):
-        ChronosBolt(bolt_stub).predict(
-            make_context(), prediction_length=3, quantile_levels=EVAL_QUANTILES, freq=FREQ
-        )
-    assert "levels [0.01, 0.99] are clamped" in caplog.text
+        for _ in range(3):  # three windows of a backtest: one warning
+            model.predict(
+                make_context(), prediction_length=3, quantile_levels=EVAL_QUANTILES, freq=FREQ
+            )
+    assert caplog.text.count("levels [0.01, 0.99] are clamped") == 1
 
 
 def test_chronos_bolt_rejects_pipeline_with_loading_arguments(bolt_stub, chronos2_stub):
@@ -778,6 +791,39 @@ def test_chronos2_forecaster_real_model(chronos2_pipeline):
 
 
 @pytest.mark.slow
+def test_tensor_api_returns_the_numbers_of_predict_df(chronos2_pipeline):
+    """Part 5 shows ``predict_quantiles`` on arrays as the route without pandas."""
+    context, future, _ = make_covariate_context(n=24 * 21, horizon=SEASON)
+    levels = [0.1, 0.5, 0.9]
+    frame = chronos2_pipeline.predict_df(
+        context[[ID_COL, TIMESTAMP_COL, TARGET_COL, "driver"]],
+        future_df=future,
+        id_column=ID_COL,
+        timestamp_column=TIMESTAMP_COL,
+        target=TARGET_COL,
+        prediction_length=SEASON,
+        quantile_levels=levels,
+    )
+    quantiles, _ = chronos2_pipeline.predict_quantiles(
+        [
+            {
+                "target": context[TARGET_COL].to_numpy(),
+                "past_covariates": {"driver": context["driver"].to_numpy()},
+                "future_covariates": {"driver": future["driver"].to_numpy()},
+            }
+        ],
+        prediction_length=SEASON,
+        quantile_levels=levels,
+    )
+    assert tuple(quantiles[0].shape) == (1, SEASON, len(levels))
+    np.testing.assert_allclose(
+        quantiles[0][0].float().cpu().numpy(),
+        frame[[quantile_col(level) for level in levels]].to_numpy(),
+        rtol=1e-5,
+    )
+
+
+@pytest.mark.slow
 def test_chronos2_forecaster_uses_future_covariates(chronos2_pipeline):
     context, future, actuals = make_covariate_context(n=24 * 21, horizon=SEASON)
     forecaster = Chronos2Forecaster(chronos2_pipeline)
@@ -836,3 +882,256 @@ def test_chronos_bolt_real_model(chronos_bolt, caplog):
     np.testing.assert_allclose(forecast["0.01"], forecast["0.1"])
     np.testing.assert_allclose(forecast["0.99"], forecast["0.9"])
     np.testing.assert_allclose(forecast[quantile_col(0.5)], forecast[PREDICTION_COL])
+
+
+# --------------------------------------------------------------------------------------------
+# MSTL and the published forecast
+# --------------------------------------------------------------------------------------------
+
+
+def test_mstl_follows_a_series_with_two_cycles():
+    steps = np.arange(28 * SEASON)
+    daily = 10 * np.sin(2 * np.pi * steps / SEASON)
+    weekly = 6 * np.sin(2 * np.pi * steps / (7 * SEASON))
+    noise = np.random.default_rng(0).normal(0, 0.2, len(steps))
+    values = 100 + daily + weekly + noise
+    frame = pd.DataFrame(
+        {
+            ID_COL: "A",
+            TIMESTAMP_COL: pd.date_range("2024-03-01", periods=len(steps), freq=FREQ),
+            TARGET_COL: values,
+        }
+    )
+    context, actual = frame.iloc[:-SEASON], values[-SEASON:]
+    kwargs = {"prediction_length": SEASON, "quantile_levels": EVAL_QUANTILES, "freq": FREQ}
+    two_cycles = MSTL((SEASON, 7 * SEASON)).predict(context, **kwargs)
+    one_cycle = AutoETS(SEASON).predict(context, **kwargs)
+    error_two = np.abs(two_cycles[PREDICTION_COL].to_numpy() - actual).mean()
+    error_one = np.abs(one_cycle[PREDICTION_COL].to_numpy() - actual).mean()
+    assert error_two < 1.0
+    assert error_two < 0.5 * error_one
+
+
+def test_mstl_uses_only_the_last_max_context_steps():
+    context = make_context(n_days=20, items=("A",), nan_positions=())
+    kwargs = {"prediction_length": 6, "quantile_levels": [0.1, 0.5, 0.9], "freq": FREQ}
+    shifted = context.copy()
+    shifted.loc[shifted.index[: 10 * SEASON], TARGET_COL] += 1000.0  # before the last 10 days
+    model = MSTL((SEASON, 2 * SEASON), max_context=8 * SEASON)
+    pd.testing.assert_frame_equal(
+        model.predict(shifted, **kwargs), model.predict(context, **kwargs)
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"season_lengths": ()}, "at least 2"),
+        ({"season_lengths": (24, 1)}, "at least 2"),
+        ({"season_lengths": (24, 24)}, "repeated"),
+        ({"season_lengths": (24, 168), "max_context": 200}, "at least 336"),
+    ],
+)
+def test_mstl_validates_parameters(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        MSTL(**kwargs)
+
+
+def test_mstl_rejects_contexts_shorter_than_two_long_cycles():
+    context = make_context(n_days=6, items=("A",), nan_positions=())
+    with pytest.raises(ValueError, match="needs at least 336"):
+        MSTL((SEASON, 7 * SEASON)).predict(
+            context, prediction_length=6, quantile_levels=[0.5], freq=FREQ
+        )
+
+
+def make_published_future(context: pd.DataFrame, prediction_length: int) -> pd.DataFrame:
+    frames = []
+    for item, group in context.groupby(ID_COL, sort=False):
+        start = group[TIMESTAMP_COL].max() + to_offset(FREQ)
+        frames.append(
+            pd.DataFrame(
+                {
+                    ID_COL: item,
+                    TIMESTAMP_COL: pd.date_range(start, periods=prediction_length, freq=FREQ),
+                    "operator": np.arange(prediction_length, dtype=float) + len(frames) * 100,
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_published_forecast_replays_the_column_at_every_level():
+    context = make_context()
+    future = make_published_future(context, 6)
+    model = PublishedForecast("operator", name="tso")
+    forecast = model.predict(
+        context,
+        prediction_length=6,
+        quantile_levels=EVAL_QUANTILES,
+        freq=FREQ,
+        future_covariates=future,
+    )
+    assert isinstance(model, Forecaster)
+    assert_valid_forecast(
+        forecast, context, targets=[TARGET_COL], prediction_length=6, quantile_levels=EVAL_QUANTILES
+    )
+    assert forecast[PREDICTION_COL].tolist() == future["operator"].tolist()
+    for level in EVAL_QUANTILES:
+        assert forecast[quantile_col(level)].tolist() == future["operator"].tolist()
+
+
+def test_published_forecast_wql_equals_wape_on_the_backtest_metrics():
+    from c2p.eval import BacktestConfig, backtest, evaluate
+
+    context = make_context(n_days=10, items=("A",), nan_positions=())
+    frame = context.assign(operator=context[TARGET_COL] + 1.5)
+    config = BacktestConfig(
+        prediction_length=12,
+        n_windows=3,
+        freq=FREQ,
+        season_length=SEASON,
+        known_covariates=("operator",),
+    )
+    metrics = evaluate(backtest(PublishedForecast("operator"), frame, config), frame, config)
+    assert metrics["WQL"].to_numpy() == pytest.approx(metrics["WAPE"].to_numpy())
+    assert (metrics["coverage_80"] == 0.0).all()
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        (lambda future: None, "needs 'operator' in future_covariates"),
+        (lambda future: future.drop(columns="operator"), "needs 'operator' in future_covariates"),
+        (lambda future: future.assign(operator=np.nan), "missing values in the horizon"),
+    ],
+)
+def test_published_forecast_rejects_a_missing_or_incomplete_column(change, match):
+    context = make_context()
+    future = change(make_published_future(context, 6))
+    with pytest.raises(ValueError, match=match):
+        PublishedForecast("operator").predict(
+            context, prediction_length=6, quantile_levels=[0.5], freq=FREQ, future_covariates=future
+        )
+
+
+def test_published_forecast_rejects_several_targets():
+    context = make_context(targets=("load", "price"))
+    future = make_published_future(context, 6)
+    with pytest.raises(ValueError, match="one target"):
+        PublishedForecast("operator").predict(
+            context,
+            prediction_length=6,
+            quantile_levels=[0.5],
+            freq=FREQ,
+            target=["load", "price"],
+            future_covariates=future,
+        )
+
+
+def test_residual_forecaster_adds_the_published_forecast_back():
+    context = make_context(nan_positions=())
+    # The published forecast is the target minus a daily pattern the naive can repeat exactly.
+    hours = context[TIMESTAMP_COL].dt.hour.to_numpy()
+    context = context.assign(operator=context[TARGET_COL] - np.sin(hours))
+    future = make_published_future(context, SEASON)
+    model = ResidualForecaster(SeasonalNaive(SEASON), "operator")
+    forecast = model.predict(
+        context,
+        prediction_length=SEASON,
+        quantile_levels=[0.1, 0.5, 0.9],
+        freq=FREQ,
+        future_covariates=future,
+    )
+    assert model.name == "seasonal_naive_on_operator_error"
+    assert_valid_forecast(
+        forecast,
+        context,
+        targets=[TARGET_COL],
+        prediction_length=SEASON,
+        quantile_levels=[0.1, 0.5, 0.9],
+    )
+    future_hours = future[TIMESTAMP_COL].dt.hour.to_numpy()
+    expected = future["operator"].to_numpy() + np.sin(future_hours)
+    assert forecast[PREDICTION_COL].to_numpy() == pytest.approx(expected, abs=1e-9)
+    assert (forecast["0.9"] >= forecast["0.5"]).all() and (forecast["0.5"] >= forecast["0.1"]).all()
+
+
+def test_residual_forecaster_hands_the_base_only_the_residual():
+    seen = {}
+
+    class Spy:
+        name = "spy"
+
+        def predict(self, context, **kwargs):
+            seen["columns"] = list(context.columns)
+            seen["future"] = kwargs.get("future_covariates")
+            return SeasonalNaive(SEASON).predict(context, **kwargs)
+
+    context = make_context(nan_positions=()).assign(operator=1.0, other=2.0)
+    future = make_published_future(context, 6)
+    ResidualForecaster(Spy(), "operator").predict(
+        context, prediction_length=6, quantile_levels=[0.5], freq=FREQ, future_covariates=future
+    )
+    assert seen["columns"] == [ID_COL, TIMESTAMP_COL, TARGET_COL]
+    assert seen["future"] is None
+
+
+def test_known_until_hides_the_covariates_after_the_first_steps():
+    seen = {}
+
+    class Spy:
+        name = "spy"
+
+        def predict(self, context, **kwargs):
+            seen["future"] = kwargs["future_covariates"]
+            return SeasonalNaive(SEASON).predict(
+                context[[ID_COL, TIMESTAMP_COL, TARGET_COL]],
+                **{k: v for k, v in kwargs.items() if k != "future_covariates"},
+            )
+
+    context = make_context(nan_positions=()).assign(operator=1.0, kind="a")
+    context["kind"] = context["kind"].astype("category")
+    future = make_published_future(context, 6).assign(kind="a", count=3)
+    future["kind"] = future["kind"].astype("category")
+    model = KnownUntil(Spy(), 2)
+    forecast = model.predict(
+        context, prediction_length=6, quantile_levels=[0.5], freq=FREQ, future_covariates=future
+    )
+    assert model.name == "spy_known_until_2"
+    step = seen["future"].groupby(ID_COL, observed=True).cumcount()
+    for column in ("operator", "kind", "count"):
+        assert seen["future"].loc[step < 2, column].notna().all()
+        assert seen["future"].loc[step >= 2, column].isna().all()
+    assert future.notna().all().all()  # the caller's frame is left alone
+    assert len(forecast) == 6 * context[ID_COL].nunique()
+
+
+def test_known_until_needs_future_covariates_and_a_valid_step_count():
+    with pytest.raises(ValueError, match="steps must be >= 0"):
+        KnownUntil(SeasonalNaive(SEASON), -1)
+    with pytest.raises(ValueError, match="needs future_covariates"):
+        KnownUntil(SeasonalNaive(SEASON), 2).predict(
+            make_context(nan_positions=()), prediction_length=6, quantile_levels=[0.5], freq=FREQ
+        )
+
+
+@pytest.mark.parametrize(
+    ("context_change", "future_change", "match"),
+    [
+        (lambda c: c.drop(columns="operator"), lambda f: f, "in the context"),
+        (lambda c: c, lambda f: None, "in future_covariates"),
+        (lambda c: c, lambda f: f.assign(operator=np.nan), "missing values in the horizon"),
+    ],
+)
+def test_residual_forecaster_rejects_incomplete_inputs(context_change, future_change, match):
+    context = make_context(nan_positions=()).assign(operator=1.0)
+    future = future_change(make_published_future(context, 6))
+    with pytest.raises(ValueError, match=match):
+        ResidualForecaster(SeasonalNaive(SEASON), "operator").predict(
+            context_change(context),
+            prediction_length=6,
+            quantile_levels=[0.5],
+            freq=FREQ,
+            future_covariates=future,
+        )

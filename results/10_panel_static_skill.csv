@@ -1,0 +1,3 @@
+model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length
++known covariates and store attributes,+known covariates,WQL,-0.012859784571412014,-0.013934930426452774,-0.011819787925476383,0.21704035874439462,1115,1
+"+known covariates and store attributes, cross-learning","+known covariates, cross-learning",WQL,-0.020803800405012396,-0.022068620812896476,-0.019511907566858805,0.15695067264573992,1115,1

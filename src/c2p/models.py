@@ -38,6 +38,19 @@ from c2p.schema import (
 if TYPE_CHECKING:
     from chronos import BaseChronosPipeline, Chronos2Pipeline, ChronosBoltPipeline
 
+__all__ = [
+    "CHRONOS2",
+    "CHRONOS2_SMALL",
+    "CHRONOS2_SYNTH",
+    "CHRONOS_BOLT_BASE",
+    "CROSS_LEARNING_BATCH_HINT",
+    "DTYPES",
+    "Chronos2Forecaster",
+    "load_chronos2",
+    "load_chronos_bolt",
+    "parameter_count",
+]
+
 logger = logging.getLogger(__name__)
 
 CHRONOS2 = "amazon/chronos-2"
@@ -60,7 +73,12 @@ def parameter_count(pipeline: BaseChronosPipeline) -> int:
     return sum(parameter.numel() for parameter in pipeline.inner_model.parameters())
 
 
-def load_chronos2(model_id: str = CHRONOS2, *, device: str | None = None) -> Chronos2Pipeline:
+DTYPES = ("float32", "bfloat16", "float16")
+
+
+def load_chronos2(
+    model_id: str = CHRONOS2, *, device: str | None = None, dtype: str = "float32"
+) -> Chronos2Pipeline:
     """Load a Chronos-2 pipeline from the Hugging Face Hub or a local folder.
 
     Parameters
@@ -69,15 +87,26 @@ def load_chronos2(model_id: str = CHRONOS2, *, device: str | None = None) -> Chr
         Hub id (e.g. ``CHRONOS2``, ``CHRONOS2_SMALL``) or path to a fine-tuned checkpoint.
     device
         ``"cpu"`` or ``"cuda"``; ``None`` uses ``c2p.config.get_device()``.
+    dtype
+        Precision of the weights: ``"float32"`` (the checkpoint's own), or ``"bfloat16"`` /
+        ``"float16"`` for half precision, which on a GPU roughly doubles the throughput and
+        lowers the memory. Half precision is for inference on a GPU: on a CPU it is slower, and
+        fine-tuning should start from ``float32``. ``bench/cheaper_variants_accuracy.py``
+        measures what it does to the forecasts.
 
     Raises ``TypeError`` when ``model_id`` is a checkpoint of another Chronos family, such as
     Chronos-Bolt (use ``load_chronos_bolt`` for those).
     """
+    import torch
     from chronos import Chronos2Pipeline
 
+    if dtype not in DTYPES:
+        raise ValueError(f"dtype must be one of {DTYPES}, got {dtype!r}.")
     _check_chronos2_checkpoint(model_id)
     device = device or get_device()
-    pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device)
+    # float32 is the checkpoint's own precision: leave the library's default untouched.
+    precision = {} if dtype == "float32" else {"dtype": getattr(torch, dtype)}
+    pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device, **precision)
     _log_loaded(model_id, device, pipeline)
     return pipeline
 
@@ -267,25 +296,35 @@ def _check_ids(ids: pd.Series) -> None:
 
 
 def warn_untrained_levels(
-    quantile_levels: Sequence[float], trained_levels: Sequence[float], *, model_name: str
+    quantile_levels: Sequence[float],
+    trained_levels: Sequence[float],
+    *,
+    model_name: str,
+    seen: set[tuple[float, ...]] | None = None,
 ) -> None:
     """Log a warning for levels outside the range a quantile model was trained on.
 
     Chronos-2 and Chronos-Bolt interpolate levels between trained ones and clamp levels outside
     the trained range to the nearest trained level. The library already logs a generic warning;
     this one names the model and states the consequence: those intervals are too narrow.
+
+    ``seen`` remembers the sets of levels already reported. A forecaster passes its own, so a
+    backtest of 365 windows logs the warning once and not 365 times.
     """
     low, high = min(trained_levels), max(trained_levels)
-    outside = [level for level in quantile_levels if not low <= level <= high]
-    if outside:
-        logger.warning(
-            "%s was trained on quantile levels in [%s, %s]; the levels %s are clamped to the "
-            "nearest trained level, so their intervals are too narrow.",
-            model_name,
-            low,
-            high,
-            outside,
-        )
+    outside = tuple(level for level in quantile_levels if not low <= level <= high)
+    if not outside or (seen is not None and outside in seen):
+        return
+    if seen is not None:
+        seen.add(outside)
+    logger.warning(
+        "%s was trained on quantile levels in [%s, %s]; the levels %s are clamped to the "
+        "nearest trained level, so their intervals are too narrow.",
+        model_name,
+        low,
+        high,
+        list(outside),
+    )
 
 
 _FORECAST_KEYS = [ID_COL, TARGET_NAME_COL, TIMESTAMP_COL]
@@ -422,6 +461,8 @@ class Chronos2Forecaster:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}.")
         self.pipeline = pipeline
         self.name = name
+        self._reported_levels: set[tuple[float, ...]] = set()
+        self._warned_batching = False
         self.context_length = context_length
         self.cross_learning = cross_learning
         self.batch_size = batch_size
@@ -454,9 +495,13 @@ class Chronos2Forecaster:
             prediction_length=prediction_length,
             freq=freq,
         )
-        warn_untrained_levels(levels, self.pipeline.quantiles, model_name=self.name)
+        warn_untrained_levels(
+            levels, self.pipeline.quantiles, model_name=self.name, seen=self._reported_levels
+        )
         n_series = int(context[ID_COL].nunique())
-        if self.cross_learning and n_series > CROSS_LEARNING_BATCH_HINT:
+        oversized = self.cross_learning and n_series > CROSS_LEARNING_BATCH_HINT
+        if oversized and not self._warned_batching:  # once per forecaster, not per window
+            self._warned_batching = True
             warnings.warn(
                 f"cross_learning=True over {n_series} series with batch_size={self.batch_size}: "
                 "every series in a batch joins one group, so the forecast depends on how the "

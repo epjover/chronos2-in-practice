@@ -25,12 +25,18 @@ from c2p.eval import (
     WINDOW_COL,
     BacktestConfig,
     Window,
+    average_runs,
     backtest,
+    error_by_horizon_block,
+    error_by_series,
+    error_by_step,
     evaluate,
+    reliability_table,
     rolling_origin_windows,
     skill_score,
     skill_table,
     summarize,
+    summarize_runs,
 )
 from c2p.schema import (
     EVAL_QUANTILES,
@@ -1175,6 +1181,113 @@ def test_skill_matches_gmean_and_ci_is_reproducible() -> None:
     assert skill_score(metrics, model="m", seed=8) != score
 
 
+def test_block_bootstrap_keeps_the_estimate_and_widens_correlated_intervals() -> None:
+    rng = np.random.default_rng(3)
+    # A slow wave under the ratios: neighbouring windows share most of their error.
+    wave = np.sin(np.arange(280) / 9.0)
+    baseline = np.ones(280)
+    model = np.exp(-0.3 + 0.5 * wave + 0.05 * rng.normal(size=280))
+    metrics = metrics_frame(m=model, seasonal_naive=baseline)
+    independent = skill_score(metrics, model="m")
+    blocks = skill_score(metrics, model="m", block_length=14)
+
+    assert blocks.skill == pytest.approx(independent.skill)
+    assert blocks.win_rate == independent.win_rate
+    assert (independent.block_length, blocks.block_length) == (1, 14)
+    assert blocks.ci_low < blocks.skill < blocks.ci_high
+    assert blocks.ci_high - blocks.ci_low > 1.5 * (independent.ci_high - independent.ci_low)
+    assert skill_score(metrics, model="m", block_length=14) == blocks
+
+
+def test_block_bootstrap_agrees_with_the_independent_one_on_uncorrelated_windows() -> None:
+    rng = np.random.default_rng(5)
+    baseline = rng.uniform(0.5, 1.5, 400)
+    model = baseline * rng.uniform(0.6, 1.2, 400)
+    metrics = metrics_frame(m=model, seasonal_naive=baseline)
+    independent = skill_score(metrics, model="m", n_resamples=4000)
+    blocks = skill_score(metrics, model="m", n_resamples=4000, block_length=7)
+    assert blocks.ci_high - blocks.ci_low == pytest.approx(
+        independent.ci_high - independent.ci_low, rel=0.2
+    )
+
+
+def test_block_length_is_validated() -> None:
+    metrics = metrics_frame(m=[1.0, 2.0, 3.0], seasonal_naive=[2.0, 2.0, 2.0])
+    with pytest.raises(ValueError, match="block_length"):
+        skill_score(metrics, model="m", block_length=0)
+    with pytest.raises(ValueError, match="exceeds the 3 windows"):
+        skill_score(metrics, model="m", block_length=4)
+    table = skill_table(metrics, block_length=3)
+    assert table["block_length"].tolist() == [3, 3]
+
+
+def test_total_skill_is_the_change_of_the_summed_error() -> None:
+    model, baseline = [1.0, 1.0, 9.0], [2.0, 2.0, 6.0]
+    metrics = metrics_frame(m=model, seasonal_naive=baseline)
+    typical = skill_score(metrics, model="m")
+    total = skill_score(metrics, model="m", aggregate="total")
+
+    assert total.skill == pytest.approx(1 - 11.0 / 10.0)  # the bad window outweighs the others
+    assert typical.skill == pytest.approx(1 - (0.5 * 0.5 * 1.5) ** (1 / 3))
+    assert typical.skill > 0 > total.skill  # better on a typical window, worse in total
+    assert (total.win_rate, total.n_units) == (typical.win_rate, typical.n_units)
+    assert total.ci_low <= total.skill <= total.ci_high
+
+
+def test_total_and_geometric_skill_agree_when_every_window_changes_alike() -> None:
+    baseline = np.random.default_rng(1).uniform(0.5, 5.0, 50)
+    metrics = metrics_frame(m=0.8 * baseline, seasonal_naive=baseline)
+    for aggregate in ("geometric", "total"):
+        score = skill_score(metrics, model="m", aggregate=aggregate, block_length=5)
+        assert score.skill == pytest.approx(0.2)
+        assert score.ci_low == pytest.approx(0.2) and score.ci_high == pytest.approx(0.2)
+
+
+def test_total_skill_ignores_the_clip_and_is_deterministic() -> None:
+    metrics = metrics_frame(m=[1000.0, 1.0, 1.0, 2.0], seasonal_naive=[1.0, 1.0, 2.0, 1.0])
+    total = skill_score(metrics, model="m", aggregate="total")
+    assert total.skill == pytest.approx(1 - 1004.0 / 5.0)  # the geometric ratio would clip at 100
+    blocks = skill_score(metrics, model="m", aggregate="total", block_length=2)
+    assert blocks.skill == pytest.approx(total.skill) and blocks.block_length == 2
+
+    rng = np.random.default_rng(4)
+    baseline = rng.uniform(0.5, 1.5, 80)
+    noisy = metrics_frame(m=baseline * rng.uniform(0.5, 1.4, 80), seasonal_naive=baseline)
+    score = skill_score(noisy, model="m", aggregate="total", seed=7)
+    assert skill_score(noisy, model="m", aggregate="total", seed=7) == score
+    assert skill_score(noisy, model="m", aggregate="total", seed=8) != score
+
+
+def test_aggregate_is_validated_and_a_zero_total_is_rejected() -> None:
+    metrics = metrics_frame(m=[1.0, 2.0], seasonal_naive=[2.0, 2.0])
+    with pytest.raises(ValueError, match="aggregate must be"):
+        skill_score(metrics, model="m", aggregate="mean")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="aggregate must be"):
+        skill_table(metrics, aggregate="mean")  # type: ignore[arg-type]
+    zero = metrics_frame(m=[1.0, 2.0], seasonal_naive=[0.0, 0.0])
+    with pytest.raises(ValueError, match="total error is zero"):
+        skill_score(zero, model="m", aggregate="total")
+
+
+def test_skill_table_with_both_aggregates_adds_the_total_columns() -> None:
+    rng = np.random.default_rng(2)
+    baseline = rng.uniform(0.5, 1.5, 60)
+    metrics = metrics_frame(m=baseline * rng.uniform(0.5, 1.4, 60), seasonal_naive=baseline)
+    geometric = skill_table(metrics, block_length=7)
+    total = skill_table(metrics, block_length=7, aggregate="total").set_index(MODEL_COL)
+    both = skill_table(metrics, block_length=7, aggregate="both")
+
+    pd.testing.assert_frame_equal(both[geometric.columns], geometric)
+    assert both[MODEL_COL].tolist() == geometric[MODEL_COL].tolist()  # ordered by skill
+    for row in both.itertuples():
+        expected = total.loc[row.model]
+        assert row.total_skill == pytest.approx(expected["skill"])
+        assert row.total_ci_low == pytest.approx(expected["ci_low"])
+        assert row.total_ci_high == pytest.approx(expected["ci_high"])
+    naive = both.set_index(MODEL_COL).loc["seasonal_naive"]
+    assert naive["total_skill"] == pytest.approx(0.0)
+
+
 def test_win_rate_counts_ties_as_half() -> None:
     metrics = metrics_frame(m=[1.0, 2.0, 3.0, 4.0], seasonal_naive=[1.0, 3.0, 2.0, 5.0])
     assert skill_score(metrics, model="m").win_rate == pytest.approx((2 + 0.5) / 4)
@@ -1213,6 +1326,7 @@ def test_skill_table_on_a_real_backtest() -> None:
         "ci_high",
         "win_rate",
         "n_units",
+        "block_length",
     ]
     assert table["skill"].is_monotonic_decreasing
     assert set(table["model"]) == {"seasonal_naive", "sharp", "noisy"}
@@ -1222,3 +1336,195 @@ def test_skill_table_on_a_real_backtest() -> None:
     assert (table["ci_low"] <= table["skill"] + 1e-12).all()
     assert (table["skill"] <= table["ci_high"] + 1e-12).all()
     pd.testing.assert_frame_equal(table, skill_table(metrics, baseline="seasonal_naive"))
+
+
+# --------------------------------------------------------------------------------------------
+# Diagnostics: reliability by level, error by step
+# --------------------------------------------------------------------------------------------
+
+
+def scored_frame(
+    actual: np.ndarray, quantiles: dict[float, np.ndarray], model: str
+) -> pd.DataFrame:
+    """A backtest output of one window and one series with the given values."""
+    steps = len(actual)
+    frame = pd.DataFrame(
+        {
+            MODEL_COL: model,
+            WINDOW_COL: 0,
+            ID_COL: "a",
+            TARGET_NAME_COL: "y",
+            TIMESTAMP_COL: pd.date_range("2024-01-01", periods=steps, freq="h"),
+            ACTUAL_COL: actual,
+            PREDICTION_COL: quantiles[0.5],
+        }
+    )
+    for level, values in quantiles.items():
+        frame[quantile_col(level)] = values
+    return frame
+
+
+def test_reliability_table_counts_actuals_at_or_below_each_quantile() -> None:
+    actual = np.arange(1.0, 11.0)  # 1..10
+    quantiles = {level: np.full(10, 10 * level) for level in SCORED_QUANTILES}  # 1, 2, ..., 9
+    table = reliability_table(scored_frame(actual, quantiles, "m"))
+    assert table["level"].tolist() == list(SCORED_QUANTILES)
+    assert table["observed"].tolist() == pytest.approx(list(SCORED_QUANTILES))
+    assert (table["n"] == 10).all()
+
+
+def test_reliability_table_shows_narrow_intervals_and_skips_missing_actuals() -> None:
+    actual = np.array([-2.0, -1.0, 1.0, 2.0, np.nan])
+    quantiles = {level: np.full(5, level - 0.5) for level in SCORED_QUANTILES}  # all within +-0.4
+    table = reliability_table(scored_frame(actual, quantiles, "narrow")).set_index("level")
+    assert (table["n"] == 4).all()
+    assert table.loc[0.1, "observed"] == 0.5  # half the actuals below the 0.1 quantile
+    assert table.loc[0.9, "observed"] == 0.5  # and only half below the 0.9 quantile
+
+
+def test_error_by_step_matches_the_definitions() -> None:
+    actual = np.array([10.0, 20.0, np.nan])
+    quantiles = {level: np.array([12.0, 20.0, 5.0]) for level in SCORED_QUANTILES}
+    frames = [scored_frame(actual, quantiles, "m"), scored_frame(actual, quantiles, "m")]
+    frames[1][WINDOW_COL] = 1
+    table = error_by_step(pd.concat(frames)).set_index("step")  # duplicated index on purpose
+    assert table.index.tolist() == [1, 2]  # step 3 has no actual
+    assert (table["n"] == 2).all()
+    assert table.loc[1, "WAPE"] == pytest.approx(2.0 / 10.0)
+    assert table.loc[2, "WAPE"] == 0.0
+    # A point forecast repeated at every level: pinball loss averages to |error| / 2.
+    assert table.loc[1, "WQL"] == pytest.approx(2.0 / 10.0)
+    assert table.loc[2, "WQL"] == 0.0
+
+
+def test_error_by_horizon_block_pools_steps_within_each_window() -> None:
+    actual = np.array([10.0, 20.0, 30.0, 40.0])
+    quantiles = {level: np.array([12.0, 20.0, 30.0, 44.0]) for level in SCORED_QUANTILES}
+    frames = [scored_frame(actual, quantiles, "m"), scored_frame(actual * 2, quantiles, "m")]
+    frames[1][WINDOW_COL] = 1
+    table = error_by_horizon_block(pd.concat(frames), edges=(2, 4))
+    assert table.columns.tolist() == [MODEL_COL, WINDOW_COL, "block", "WAPE", "WQL", "n"]
+    assert table["block"].astype(str).tolist() == ["1-2", "3-4", "1-2", "3-4"]
+    assert table[WINDOW_COL].tolist() == [0, 0, 1, 1]
+    first = table.set_index([WINDOW_COL, "block"])
+    assert first.loc[(0, "1-2"), "WAPE"] == pytest.approx(2.0 / 30.0)
+    assert first.loc[(0, "3-4"), "WAPE"] == pytest.approx(4.0 / 70.0)
+    assert first.loc[(0, "3-4"), "WQL"] == pytest.approx(4.0 / 70.0)  # a point forecast
+    assert (table["n"] == 2).all()
+    # Steps past the last edge are left out, and the edges must make sense.
+    assert error_by_horizon_block(pd.concat(frames), edges=(3,))["n"].tolist() == [3, 3]
+    with pytest.raises(ValueError, match="edges must be increasing"):
+        error_by_horizon_block(pd.concat(frames), edges=(2, 2))
+
+
+def test_error_by_series_gives_one_row_per_model_and_series() -> None:
+    actual = np.array([10.0, 20.0, np.nan])
+    quantiles = {level: np.array([12.0, 20.0, 5.0]) for level in SCORED_QUANTILES}
+    first = scored_frame(actual, quantiles, "m")
+    second = scored_frame(actual * 2, quantiles, "m").assign(**{ID_COL: "b"})
+    table = error_by_series(pd.concat([first, second])).set_index(ID_COL)
+    assert table.index.tolist() == ["a", "b"]
+    assert (table["n"] == 2).all()
+    assert table.loc["a", "WAPE"] == pytest.approx(2.0 / 30.0)
+    assert table.loc["b", "WAPE"] == pytest.approx((8.0 + 20.0) / 60.0)
+    assert table.loc["a", "WQL"] == pytest.approx(2.0 / 30.0)  # a point forecast: WQL = WAPE
+
+
+def test_skill_can_resample_series_instead_of_windows() -> None:
+    rows = [
+        {MODEL_COL: model, ID_COL: series, "WQL": error}
+        for model, errors in (("base", (1.0, 2.0, 4.0)), ("half", (0.5, 1.0, 2.0)))
+        for series, error in zip("abc", errors, strict=True)
+    ]
+    table = skill_table(pd.DataFrame(rows), baseline="base", unit=ID_COL).set_index(MODEL_COL)
+    assert table.loc["half", "skill"] == pytest.approx(0.5)
+    assert table.loc["half", "n_units"] == 3
+    with pytest.raises(ValueError, match="window"):
+        skill_table(pd.DataFrame(rows), baseline="base")  # no window column
+
+
+def test_diagnostics_run_on_a_real_backtest() -> None:
+    df = make_series((80, 80))
+    config = BacktestConfig(prediction_length=6, n_windows=5, freq="h", season_length=4)
+    forecasts = backtest(LastValue(name="wide", spread=50.0), df, config)
+    reliability = reliability_table(forecasts)
+    assert len(reliability) == len(SCORED_QUANTILES)
+    assert reliability["observed"].is_monotonic_increasing
+    steps = error_by_step(forecasts)
+    assert steps["step"].tolist() == [1, 2, 3, 4, 5, 6]
+    assert (steps["n"] == 10).all()  # 5 windows x 2 series
+
+
+# --------------------------------------------------------------------------------------------
+# Several runs of one configuration
+# --------------------------------------------------------------------------------------------
+
+
+def test_average_runs_averages_each_window_over_the_runs() -> None:
+    runs = pd.concat(
+        [
+            pd.DataFrame(
+                {MODEL_COL: "seed_1", WINDOW_COL: [0, 1], "WQL": [0.2, 0.4], "seconds": 1.0}
+            ),
+            pd.DataFrame(
+                {MODEL_COL: "seed_2", WINDOW_COL: [1, 0], "WQL": [0.8, 0.4], "seconds": 3.0}
+            ),
+        ],
+        ignore_index=True,
+    )
+    runs[CUTOFF_COL] = pd.Timestamp("2024-01-01") + pd.to_timedelta(runs[WINDOW_COL], unit="D")
+    averaged = average_runs(runs, "lora")
+    assert averaged[MODEL_COL].tolist() == ["lora", "lora"]
+    assert averaged[WINDOW_COL].tolist() == [0, 1]
+    assert averaged["WQL"].tolist() == pytest.approx([0.3, 0.6])
+    assert averaged["seconds"].tolist() == [2.0, 2.0]
+    assert averaged[CUTOFF_COL].tolist() == [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")]
+    # The averaged run goes through the skill table like any model.
+    baseline = pd.DataFrame({MODEL_COL: "seasonal_naive", WINDOW_COL: [0, 1], "WQL": [0.6, 1.2]})
+    table = skill_table(pd.concat([averaged, baseline], ignore_index=True)).set_index(MODEL_COL)
+    assert table.loc["lora", "skill"] == pytest.approx(0.5)
+
+
+def test_average_runs_rejects_runs_on_different_windows() -> None:
+    runs = pd.concat(
+        [
+            pd.DataFrame({MODEL_COL: "seed_1", WINDOW_COL: [0, 1], "WQL": [0.2, 0.4]}),
+            pd.DataFrame({MODEL_COL: "seed_2", WINDOW_COL: [0, 2], "WQL": [0.2, 0.4]}),
+        ],
+        ignore_index=True,
+    )
+    with pytest.raises(ValueError, match="same windows"):
+        average_runs(runs, "lora")
+    with pytest.raises(ValueError, match="is empty"):
+        average_runs(runs.iloc[:0], "lora")
+
+
+def test_summarize_runs_scores_the_average_and_reports_the_spread() -> None:
+    baseline = pd.DataFrame({MODEL_COL: "zero-shot", WINDOW_COL: range(4), "WQL": 1.0})
+    seed_1 = pd.DataFrame({MODEL_COL: "a_s1", WINDOW_COL: range(4), "WQL": [0.5, 0.5, 0.5, 0.5]})
+    seed_2 = pd.DataFrame({MODEL_COL: "a_s2", WINDOW_COL: range(4), "WQL": [1.0, 1.0, 1.0, 1.0]})
+    other = pd.DataFrame({MODEL_COL: "b_s1", WINDOW_COL: range(4), "WQL": [2.0, 2.0, 2.0, 2.0]})
+    metrics = pd.concat([baseline, seed_1, seed_2, other], ignore_index=True)
+    metrics["coverage_80"] = 0.8
+    summary, averaged = summarize_runs(metrics, {"a": ["a_s1", "a_s2"], "b": ["b_s1"]})
+    summary = summary.set_index(MODEL_COL)
+    assert summary.loc["a", "n_runs"] == 2
+    assert summary.loc["a", "WQL"] == pytest.approx(0.75)
+    assert summary.loc["a", "mean_change"] == pytest.approx(-0.25)
+    assert summary.loc["a", "skill"] == pytest.approx(0.25)
+    assert summary.loc["a", "run_skill_min"] == pytest.approx(0.0)
+    assert summary.loc["a", "run_skill_max"] == pytest.approx(0.5)
+    assert summary.loc["b", "skill"] == pytest.approx(-1.0)
+    assert summary.loc["b", "coverage_80"] == pytest.approx(0.8)
+    assert sorted(averaged[MODEL_COL].unique()) == ["a", "b", "zero-shot"]
+    assert skill_table(averaged, baseline="zero-shot")["model"].tolist() == ["a", "zero-shot", "b"]
+
+
+def test_summarize_runs_validates_groups() -> None:
+    metrics = pd.DataFrame({MODEL_COL: ["zero-shot", "a"], WINDOW_COL: [0, 0], "WQL": [1.0, 0.5]})
+    with pytest.raises(ValueError, match="groups is empty"):
+        summarize_runs(metrics, {})
+    with pytest.raises(ValueError, match="no rows for"):
+        summarize_runs(metrics, {"g": ["missing"]})
+    with pytest.raises(ValueError, match="like the baseline"):
+        summarize_runs(metrics, {"zero-shot": ["a"]})

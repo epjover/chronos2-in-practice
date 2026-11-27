@@ -1,0 +1,2 @@
+model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length,total_skill,total_ci_low,total_ci_high
+chronos-2,chronos-bolt,WQL,0.045539338560887654,-0.010680320032179917,0.09846084627934099,0.5835616438356165,365,7,-0.13138053376128545,-0.2130384331400227,-0.05279214357288552

@@ -33,6 +33,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from itertools import pairwise
 from numbers import Integral
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -67,14 +68,20 @@ __all__ = [
     "BacktestConfig",
     "SkillScore",
     "Window",
+    "average_runs",
     "backtest",
     "coverage_column",
+    "error_by_horizon_block",
+    "error_by_series",
+    "error_by_step",
     "evaluate",
     "iter_windows",
+    "reliability_table",
     "rolling_origin_windows",
     "skill_score",
     "skill_table",
     "summarize",
+    "summarize_runs",
 ]
 
 logger = logging.getLogger(__name__)
@@ -837,16 +844,154 @@ def summarize(metrics: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------------------------
+# Diagnostics over the scored forecasts: calibration by level, error by horizon step
+# --------------------------------------------------------------------------------------------
+
+STEP_COL = "step"
+
+
+def reliability_table(
+    forecasts: pd.DataFrame, quantile_levels: Sequence[float] = SCORED_QUANTILES
+) -> pd.DataFrame:
+    """Share of actuals at or below each forecast quantile, per model.
+
+    ``forecasts`` is the output of :func:`backtest` (forecasts with ``actual`` joined). A
+    calibrated model has ``observed`` equal to ``level`` at every level: 10% of the actuals
+    below its 0.1 quantile, 50% below its median. ``observed`` above ``level`` at the low
+    levels and below it at the high ones means intervals that are too narrow. Rows with a NaN
+    actual are left out; ``n`` counts the rows used.
+
+    Returns one row per (model, level): ``model``, ``level``, ``observed``, ``n``.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    columns = [quantile_col(level) for level in quantile_levels]
+    _check_columns(forecasts, [MODEL_COL, ACTUAL_COL, *columns], "forecasts")
+    observed = forecasts.loc[forecasts[ACTUAL_COL].notna()]
+    rows = [
+        {
+            MODEL_COL: model,
+            "level": float(level),
+            "observed": float((group[ACTUAL_COL] <= group[column]).mean()),
+            "n": len(group),
+        }
+        for model, group in observed.groupby(MODEL_COL, sort=True)
+        for level, column in zip(quantile_levels, columns, strict=True)
+    ]
+    return pd.DataFrame(rows)
+
+
+def error_by_step(forecasts: pd.DataFrame) -> pd.DataFrame:
+    """Error of each model by horizon step, pooled over windows and series.
+
+    ``step`` counts from 1 at the first forecast timestamp of each window. ``WAPE`` is the sum
+    of the point forecast's absolute errors over the sum of the absolute actuals at that step,
+    and ``WQL`` is twice the mean pinball loss over ``SCORED_QUANTILES`` over the mean absolute
+    actual, so both read as a share of the level and are comparable across steps. Rows with a
+    NaN actual are left out.
+
+    Returns one row per (model, step): ``model``, ``step``, ``WAPE``, ``WQL``, ``n``.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    keys = [MODEL_COL, WINDOW_COL, ID_COL, TARGET_NAME_COL]
+    _check_columns(forecasts, [*keys, TIMESTAMP_COL], "forecasts")
+    forecasts = forecasts.reset_index(drop=True)
+    # The step is counted before NaN actuals are dropped, so a missing hour keeps its number.
+    steps = forecasts.groupby(keys, sort=False)[TIMESTAMP_COL].rank(method="first").astype(int)
+    return _pooled_errors(forecasts.assign(**{STEP_COL: steps}), STEP_COL)
+
+
+def error_by_horizon_block(forecasts: pd.DataFrame, edges: Sequence[int]) -> pd.DataFrame:
+    """Error of each model on each window, separately for blocks of horizon steps.
+
+    ``edges`` are the last steps of the blocks, in increasing order: ``(12, 24)`` scores steps
+    1 to 12 and steps 13 to 24 apart. Within a (model, window, block) every series and step is
+    pooled, with ``WAPE`` and ``WQL`` defined as in :func:`error_by_step`. The result has the
+    columns :func:`skill_table` needs, so one block can be compared across models with the
+    same intervals as a whole window. Steps beyond the last edge are left out.
+
+    Returns one row per (model, window, block): ``model``, ``window``, ``block`` (``"1-12"``),
+    ``WAPE``, ``WQL``, ``n``.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    keys = [MODEL_COL, WINDOW_COL, ID_COL, TARGET_NAME_COL]
+    _check_columns(forecasts, [*keys, TIMESTAMP_COL], "forecasts")
+    edges = [int(edge) for edge in edges]
+    if not edges or edges[0] < 1 or any(b <= a for a, b in pairwise(edges)):
+        raise ValueError(f"edges must be increasing step numbers >= 1, got {edges}.")
+    forecasts = forecasts.reset_index(drop=True)
+    steps = forecasts.groupby(keys, sort=False)[TIMESTAMP_COL].rank(method="first").astype(int)
+    starts = [1, *(edge + 1 for edge in edges[:-1])]
+    labels = [f"{start}-{edge}" for start, edge in zip(starts, edges, strict=True)]
+    block = pd.cut(steps, bins=[0, *edges], labels=labels)
+    kept = forecasts.loc[block.notna()].copy()
+    # One pooled error per (window, block): the pair is packed into a single grouping key.
+    kept["_cell"] = kept[WINDOW_COL].astype(str) + "|" + block[block.notna()].astype(str)
+    table = _pooled_errors(kept, "_cell")
+    cell = table.pop("_cell").str.split("|", n=1, expand=True)
+    table.insert(1, WINDOW_COL, cell[0].astype(forecasts[WINDOW_COL].dtype))
+    table.insert(2, "block", pd.Categorical(cell[1], categories=labels, ordered=True))
+    return table.sort_values([MODEL_COL, WINDOW_COL, "block"], ignore_index=True)
+
+
+def error_by_series(forecasts: pd.DataFrame) -> pd.DataFrame:
+    """Error of each model on each series, pooled over windows and horizon steps.
+
+    The per-window metrics of :func:`evaluate` pool every series of a window into one number,
+    which is how benchmarks score a panel. This is the other cut: one row per (model, series),
+    so a panel of a thousand series gives a thousand paired errors to compare two models on
+    (``skill_table(..., unit="item_id")``). ``WAPE`` and ``WQL`` are defined as in
+    :func:`error_by_step`. A series whose actuals are all zero has undefined (NaN) errors.
+
+    Returns one row per (model, series): ``model``, ``item_id``, ``WAPE``, ``WQL``, ``n``.
+    """
+    _check_is_frame(forecasts, "forecasts")
+    _check_columns(forecasts, [MODEL_COL, ID_COL], "forecasts")
+    return _pooled_errors(forecasts.reset_index(drop=True), ID_COL)
+
+
+def _pooled_errors(forecasts: pd.DataFrame, by: str) -> pd.DataFrame:
+    """WAPE and WQL of each model per value of ``by``, pooling every row that has an actual."""
+    _check_columns(forecasts, [ACTUAL_COL, PREDICTION_COL, *_SCORED_COLUMNS], "forecasts")
+    frame = forecasts.loc[forecasts[ACTUAL_COL].notna()].copy()
+    actual = frame[ACTUAL_COL].to_numpy("float64")
+    frame["_abs_error"] = np.abs(actual - frame[PREDICTION_COL].to_numpy("float64"))
+    frame["_abs_actual"] = np.abs(actual)
+    quantiles = frame[_SCORED_COLUMNS].to_numpy("float64")
+    levels = np.asarray(SCORED_QUANTILES)
+    diff = actual[:, None] - quantiles
+    frame["_pinball"] = np.maximum(levels * diff, (levels - 1.0) * diff).mean(axis=1)
+    table = (
+        frame.groupby([MODEL_COL, by], sort=True, observed=True)
+        .agg(
+            _abs_error=("_abs_error", "sum"),
+            _abs_actual=("_abs_actual", "sum"),
+            _pinball=("_pinball", "mean"),
+            n=("_pinball", "size"),
+        )
+        .reset_index()
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        table["WAPE"] = table["_abs_error"] / table["_abs_actual"]
+        table["WQL"] = 2.0 * table["_pinball"] / (table["_abs_actual"] / table["n"])
+    return table[[MODEL_COL, by, "WAPE", "WQL", "n"]]
+
+
+# --------------------------------------------------------------------------------------------
 # Skill scores
 # --------------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class SkillScore:
-    """Skill of ``model`` over ``baseline`` on ``metric``: ``1 - gmean(model / baseline)``.
+    """Skill of ``model`` over ``baseline`` on ``metric``, as returned by :func:`skill_score`.
 
+    ``skill`` is ``1 - gmean(model / baseline)`` over the windows (the typical window) or,
+    when it was asked for with ``aggregate="total"``, ``1 - sum(model) / sum(baseline)`` (the
+    error of all the windows together).
     ``ci_low``/``ci_high`` bound the 95% bootstrap interval over the ``n_units`` windows;
     ``win_rate`` is the share of windows where the model beats the baseline (ties count 0.5).
+    ``block_length`` is the run of consecutive windows the bootstrap resampled together (1 =
+    windows resampled independently).
     """
 
     model: str
@@ -857,6 +1002,7 @@ class SkillScore:
     ci_high: float
     win_rate: float
     n_units: int
+    block_length: int = 1
 
 
 def skill_score(
@@ -868,23 +1014,63 @@ def skill_score(
     n_resamples: int = 1000,
     seed: int = SEED,
     clip: tuple[float, float] = (0.01, 100.0),
+    block_length: int = 1,
+    unit: str = WINDOW_COL,
+    aggregate: Literal["geometric", "total"] = "geometric",
 ) -> SkillScore:
     """Skill score of ``model`` relative to ``baseline``, with a bootstrap confidence interval.
 
     Follows the fev-bench leaderboard with windows as units: the relative error of each window
     (model / baseline) is clipped to ``clip`` so a single window cannot dominate, the skill is
     ``1 - gmean(relative errors)`` (0 = as good as the baseline, 0.5 = errors halved), and
-    the 95% interval comes from ``fev.analysis.bootstrap`` over windows. Deterministic for a
-    given ``seed``. Per-target metrics must be filtered to one target first.
+    the 95% interval comes from a bootstrap over windows. Deterministic for a given ``seed``.
+    Per-target metrics must be filtered to one target first.
+
+    ``block_length=1`` resamples windows independently (``fev.analysis.bootstrap``). That is
+    right for windows far apart in time and too narrow for consecutive ones, whose errors are
+    correlated: a cold week is seven bad windows, not seven independent draws. A larger
+    ``block_length`` resamples runs of that many consecutive windows instead (circular
+    moving-block bootstrap), which keeps the correlation inside each run. The point estimate
+    is the same either way.
+
+    ``unit`` names the column whose values are the paired units, one row per model and unit:
+    windows by default, or ``"item_id"`` for the per-series errors of :func:`error_by_series`,
+    which resamples the series of a panel instead of its windows.
+
+    ``aggregate`` chooses what the windows are summarised into, and the two answer different
+    questions. ``"geometric"`` (the default, described above) gives every window the same
+    weight whatever the size of its error: it is the change on a *typical* window.
+    ``"total"`` is ``1 - sum(model errors) / sum(baseline errors)``, the change of the error
+    of all the windows together, in which a bad day weighs as much as its error; ``clip`` does
+    not apply to it. When a few windows hold much of the error the two can differ by many
+    points, and even in sign, so a comparison between models should report both.
     """
-    model_errors, baseline_errors = _paired_errors(metrics, model, baseline, metric)
+    model_errors, baseline_errors = _paired_errors(metrics, model, baseline, metric, unit)
     relative = _relative_errors(model_errors, baseline_errors, clip)
-    skill, ci_low, ci_high = bootstrap(
-        relative[:, None],
-        statistic=_skill,
-        n_resamples=_positive_int("n_resamples", n_resamples),
-        seed=seed,
-    )
+    n_resamples = _positive_int("n_resamples", n_resamples)
+    block_length = _positive_int("block_length", block_length)
+    if block_length > len(relative):
+        raise ValueError(
+            f"block_length={block_length} exceeds the {len(relative)} windows being resampled."
+        )
+    if aggregate not in ("geometric", "total"):
+        raise ValueError(f"aggregate must be 'geometric' or 'total', got {aggregate!r}.")
+    if aggregate == "total":
+        skill, ci_low, ci_high = _total_bootstrap(
+            model_errors,
+            baseline_errors,
+            block_length=block_length,
+            n_resamples=n_resamples,
+            seed=seed,
+        )
+    elif block_length == 1:
+        skill, ci_low, ci_high = bootstrap(
+            relative[:, None], statistic=_skill, n_resamples=n_resamples, seed=seed
+        )
+    else:
+        skill, ci_low, ci_high = _block_bootstrap(
+            relative, block_length=block_length, n_resamples=n_resamples, seed=seed
+        )
     return SkillScore(
         model=model,
         baseline=baseline,
@@ -894,7 +1080,59 @@ def skill_score(
         ci_high=float(ci_high[0]),
         win_rate=_win_rate(model_errors, baseline_errors),
         n_units=len(relative),
+        block_length=block_length,
     )
+
+
+def _block_bootstrap(
+    relative: np.ndarray, *, block_length: int, n_resamples: int, seed: int, alpha: float = 0.05
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Point estimate and (1 - alpha) interval of the skill, resampling runs of windows.
+
+    ``relative`` holds one relative error per window, ordered in time. Each resample joins
+    ``ceil(n / block_length)`` runs that start at random windows and wrap around the end (the
+    circular variant, so every window is equally likely to be drawn) and keeps the first ``n``
+    values. Same return shape as ``fev.analysis.bootstrap`` for one model.
+    """
+    indices = _block_indices(len(relative), block_length, n_resamples, seed)
+    resampled = _skill(relative[indices].T)
+    point = _skill(relative[:, None])
+    lower = np.quantile(resampled, 0.5 * alpha, keepdims=True)
+    upper = np.quantile(resampled, 1 - 0.5 * alpha, keepdims=True)
+    return point, lower, upper
+
+
+def _block_indices(n_windows: int, block_length: int, n_resamples: int, seed: int) -> np.ndarray:
+    """Window positions of every resample, one row each: runs of ``block_length`` windows."""
+    rng = np.random.default_rng(seed=seed)
+    n_blocks = -(-n_windows // block_length)
+    starts = rng.integers(0, n_windows, size=(n_resamples, n_blocks))
+    indices = (starts[:, :, None] + np.arange(block_length)) % n_windows
+    return indices.reshape(n_resamples, -1)[:, :n_windows]
+
+
+def _total_bootstrap(
+    model_errors: np.ndarray,
+    baseline_errors: np.ndarray,
+    *,
+    block_length: int,
+    n_resamples: int,
+    seed: int,
+    alpha: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Point estimate and interval of ``1 - sum(model) / sum(baseline)``, resampling windows.
+
+    The same resamples as :func:`_block_bootstrap` (independent windows when ``block_length``
+    is 1), with both models read on the same resampled windows so the comparison stays paired.
+    """
+    if not baseline_errors.sum() > 0:
+        raise ValueError("The baseline's total error is zero: the total skill is undefined.")
+    indices = _block_indices(len(model_errors), block_length, n_resamples, seed)
+    resampled = _total_skill(model_errors[indices].T, baseline_errors[indices].T)
+    point = _total_skill(model_errors[:, None], baseline_errors[:, None])
+    lower = np.quantile(resampled, 0.5 * alpha, keepdims=True)
+    upper = np.quantile(resampled, 1 - 0.5 * alpha, keepdims=True)
+    return point, lower, upper
 
 
 def skill_table(
@@ -905,35 +1143,58 @@ def skill_table(
     n_resamples: int = 1000,
     seed: int = SEED,
     clip: tuple[float, float] = (0.01, 100.0),
+    block_length: int = 1,
+    unit: str = WINDOW_COL,
+    aggregate: Literal["geometric", "total", "both"] = "geometric",
 ) -> pd.DataFrame:
-    """:func:`skill_score` of every model in ``metrics`` (baseline included), best first."""
+    """:func:`skill_score` of every model in ``metrics`` (baseline included), best first.
+
+    ``aggregate="both"`` returns the geometric table with three more columns, ``total_skill``,
+    ``total_ci_low`` and ``total_ci_high``: the same comparison on the error of all the
+    windows together. Rows are ordered by ``skill`` in every case.
+    """
     _check_is_frame(metrics, "metrics")
     _check_columns(metrics, [MODEL_COL], "metrics")
-    scores = [
-        asdict(
-            skill_score(
-                metrics,
-                model=model,
-                baseline=baseline,
-                metric=metric,
-                n_resamples=n_resamples,
-                seed=seed,
-                clip=clip,
+    if aggregate not in ("geometric", "total", "both"):
+        raise ValueError(f"aggregate must be 'geometric', 'total' or 'both', got {aggregate!r}.")
+
+    def scores(kind: Literal["geometric", "total"]) -> pd.DataFrame:
+        rows = [
+            asdict(
+                skill_score(
+                    metrics,
+                    model=model,
+                    baseline=baseline,
+                    metric=metric,
+                    n_resamples=n_resamples,
+                    seed=seed,
+                    clip=clip,
+                    block_length=block_length,
+                    unit=unit,
+                    aggregate=kind,
+                )
             )
-        )
-        for model in sorted(metrics[MODEL_COL].unique())
-    ]
-    return pd.DataFrame(scores).sort_values(
-        "skill", ascending=False, kind="stable", ignore_index=True
-    )
+            for model in sorted(metrics[MODEL_COL].unique())
+        ]
+        return pd.DataFrame(rows)
+
+    if aggregate == "both":
+        table = scores("geometric")
+        total = scores("total")
+        table["total_skill"] = total["skill"]
+        table["total_ci_low"] = total["ci_low"]
+        table["total_ci_high"] = total["ci_high"]
+    else:
+        table = scores(aggregate)
+    return table.sort_values("skill", ascending=False, kind="stable", ignore_index=True)
 
 
 def _paired_errors(
-    metrics: pd.DataFrame, model: str, baseline: str, metric: str
+    metrics: pd.DataFrame, model: str, baseline: str, metric: str, unit: str = WINDOW_COL
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Errors of both models on the same windows, ordered by window."""
+    """Errors of both models on the same units (windows by default), ordered by unit."""
     _check_is_frame(metrics, "metrics")
-    _check_columns(metrics, [MODEL_COL, WINDOW_COL, metric], "metrics")
+    _check_columns(metrics, [MODEL_COL, unit, metric], "metrics")
     targets = sorted(metrics[TARGET_NAME_COL].unique()) if TARGET_NAME_COL in metrics else []
     if len(targets) > 1:
         raise ValueError(
@@ -943,8 +1204,8 @@ def _paired_errors(
     available = sorted(metrics[MODEL_COL].unique())
     if missing := [name for name in (model, baseline) if name not in available]:
         raise ValueError(f"metrics has no rows for {missing}; available models: {available}.")
-    model_errors = _errors_by_window(metrics, model, metric)
-    baseline_errors = _errors_by_window(metrics, baseline, metric)
+    model_errors = _errors_by_window(metrics, model, metric, unit)
+    baseline_errors = _errors_by_window(metrics, baseline, metric, unit)
     if not model_errors.index.equals(baseline_errors.index):
         raise ValueError(
             f"{model!r} and {baseline!r} must be scored on the same windows; got "
@@ -955,11 +1216,13 @@ def _paired_errors(
     return model_errors.to_numpy("float64"), baseline_errors.to_numpy("float64")
 
 
-def _errors_by_window(metrics: pd.DataFrame, model: str, metric: str) -> pd.Series:
+def _errors_by_window(
+    metrics: pd.DataFrame, model: str, metric: str, unit: str = WINDOW_COL
+) -> pd.Series:
     rows = metrics.loc[metrics[MODEL_COL] == model]
-    if rows[WINDOW_COL].duplicated().any():
-        raise ValueError(f"metrics has several rows for the same window of {model!r}.")
-    return rows.set_index(WINDOW_COL)[metric].sort_index().astype("float64")
+    if rows[unit].duplicated().any():
+        raise ValueError(f"metrics has several rows for the same {unit} of {model!r}.")
+    return rows.set_index(unit)[metric].sort_index().astype("float64")
 
 
 def _relative_errors(
@@ -978,6 +1241,11 @@ def _relative_errors(
 def _skill(relative_errors: np.ndarray) -> np.ndarray:
     """Bootstrap statistic: ``1 - gmean`` over windows (axis 0), as in fev's leaderboard."""
     return 1.0 - scipy.stats.gmean(relative_errors, axis=0)
+
+
+def _total_skill(model_errors: np.ndarray, baseline_errors: np.ndarray) -> np.ndarray:
+    """Bootstrap statistic: ``1 - sum(model) / sum(baseline)`` over windows (axis 0)."""
+    return 1.0 - model_errors.sum(axis=0) / baseline_errors.sum(axis=0)
 
 
 def _win_rate(model_errors: np.ndarray, baseline_errors: np.ndarray) -> float:
@@ -1051,3 +1319,115 @@ def _examples(frame: pd.DataFrame, n: int = 3) -> list[tuple[str, ...]]:
 
 def _preview(values: pd.Series, n: int = 5) -> dict[str, str]:
     return {str(key): str(value) for key, value in values.head(n).items()}
+
+
+# --------------------------------------------------------------------------------------------
+# Several runs of one configuration
+# --------------------------------------------------------------------------------------------
+
+
+def average_runs(metrics: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Average the per-window metrics of several runs into the metrics of one model.
+
+    ``metrics`` holds the :func:`evaluate` rows of runs that differ only in something the
+    experimenter does not choose, such as the random seed of a fine-tune. For every window the
+    numeric columns are averaged over the runs and the result is labelled ``name``, so it can
+    go through :func:`summarize` and :func:`skill_table` like any model. What it estimates is
+    the error to expect from *a* run of that configuration, which is the quantity a single
+    seed reports with luck added.
+
+    Every run must cover the same windows.
+    """
+    _check_is_frame(metrics, "metrics")
+    _check_columns(metrics, [MODEL_COL, WINDOW_COL], "metrics")
+    if metrics.empty:
+        raise ValueError("metrics is empty.")
+    windows_by_run = metrics.groupby(MODEL_COL, sort=True)[WINDOW_COL].apply(
+        lambda column: tuple(sorted(column))
+    )
+    if len(set(windows_by_run)) != 1:
+        raise ValueError(
+            f"The runs {windows_by_run.index.tolist()} do not cover the same windows; "
+            "average only runs scored on the same backtest."
+        )
+    keys = [column for column in (WINDOW_COL, CUTOFF_COL, TARGET_NAME_COL) if column in metrics]
+    numeric = [
+        column
+        for column in metrics.columns
+        if column not in keys and pd.api.types.is_numeric_dtype(metrics[column])
+    ]
+    averaged = metrics.groupby(keys, sort=True, as_index=False)[numeric].mean()
+    averaged.insert(0, MODEL_COL, name)
+    return averaged
+
+
+def summarize_runs(
+    metrics: pd.DataFrame,
+    groups: Mapping[str, Sequence[str]],
+    *,
+    baseline: str = "zero-shot",
+    metric: str = "WQL",
+    block_length: int = 1,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score groups of runs against ``baseline``: each group averaged, plus its spread.
+
+    ``groups`` maps a name (``"lora_r8"``) to the models of ``metrics`` that are runs of that
+    configuration (its seeds). Each group is averaged window by window with
+    :func:`average_runs` and scored like a model; the single runs are scored too, so the
+    summary shows how far one run can sit from the average.
+
+    Returns ``(summary, averaged)``. ``summary`` has one row per group: ``model``, ``n_runs``,
+    the mean ``metric``, ``mean_change`` (mean metric over the baseline's, minus one: the
+    arithmetic counterpart of the skill, dominated by the windows with large errors),
+    ``skill`` with ``ci_low``, ``ci_high`` and ``win_rate`` (the geometric one, of the averaged
+    runs), ``run_skill_min`` and ``run_skill_max`` (the skill of the worst and best single
+    run) and the coverage columns present. ``averaged`` holds the baseline's rows and the
+    averaged rows of every group, ready for :func:`skill_table`.
+    """
+    _check_is_frame(metrics, "metrics")
+    _check_columns(metrics, [MODEL_COL, WINDOW_COL, metric], "metrics")
+    if not groups:
+        raise ValueError("groups is empty.")
+    available = set(metrics[MODEL_COL].unique())
+    missing = sorted({baseline, *(run for runs in groups.values() for run in runs)} - available)
+    if missing:
+        raise ValueError(f"metrics has no rows for {missing}; available: {sorted(available)}.")
+    if baseline in groups:
+        raise ValueError(f"A group cannot be named like the baseline {baseline!r}.")
+    reference = metrics[metrics[MODEL_COL] == baseline]
+    averaged = pd.concat(
+        [reference]
+        + [
+            average_runs(metrics[metrics[MODEL_COL].isin(list(runs))], name)
+            for name, runs in groups.items()
+        ],
+        ignore_index=True,
+    )
+    means = averaged.groupby(MODEL_COL)[
+        [column for column in (metric, *COVERAGE_COLUMNS) if column in averaged]
+    ].mean()
+    rows = []
+    for name, runs in groups.items():
+        score = skill_score(
+            averaged, model=name, baseline=baseline, metric=metric, block_length=block_length
+        )
+        run_skills = [
+            skill_score(metrics, model=run, baseline=baseline, metric=metric).skill for run in runs
+        ]
+        row: dict[str, object] = {
+            MODEL_COL: name,
+            "n_runs": len(runs),
+            metric: float(means.loc[name, metric]),
+            "mean_change": float(means.loc[name, metric] / means.loc[baseline, metric] - 1.0),
+            "skill": score.skill,
+            "ci_low": score.ci_low,
+            "ci_high": score.ci_high,
+            "win_rate": score.win_rate,
+            "run_skill_min": min(run_skills),
+            "run_skill_max": max(run_skills),
+        }
+        row |= {
+            column: float(means.loc[name, column]) for column in COVERAGE_COLUMNS if column in means
+        }
+        rows.append(row)
+    return pd.DataFrame(rows), averaged

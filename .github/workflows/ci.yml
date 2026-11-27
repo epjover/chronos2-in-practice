@@ -42,8 +42,13 @@ jobs:
       - name: Ruff format
         run: uv run ruff format --check .
 
-      - name: Fast tests
-        run: uv run pytest
+      # mypy and pytest-cov are not project dependencies: `--with` adds them to this command
+      # only, on top of the synced environment.
+      - name: Type check
+        run: uv run --with mypy mypy
+
+      - name: Fast tests with coverage
+        run: uv run --with pytest-cov pytest --cov=c2p --cov-report=term-missing:skip-covered
 
   notebooks:
     name: Notebooks (fast mode, CPU)

@@ -9,6 +9,7 @@ the three staying in step.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -54,9 +55,12 @@ def test_check_rows_reports_a_row_typed_from_a_rounded_printout() -> None:
     (path,) = sorted((SCRIPT.parents[1] / "articles").glob("04-*.md"))
     text = path.read_text(encoding="utf-8")
     assert audit.check_rows("04", text, results) == []
-    wrong = text.replace("+1.8% [+0.5, +3.1]", "+1.9% [+0.5, +3.1]")
+    match = re.search(r"\+(\d)\.\d% \[[^\]]+\]", text)
+    assert match is not None
+    right = match.group(0)
+    wrong = text.replace(right, f"+{(int(match.group(1)) + 1) % 10}{right[2:]}")
     problems = audit.check_rows("04", wrong, results)
-    assert problems and all("+1.8% [+0.5, +3.1]" in problem for problem in problems[:1])
+    assert problems and right in problems[0]
 
 
 def test_check_code_binds_calls_across_blocks() -> None:

@@ -1,0 +1,6 @@
+model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units,block_length
++known covariates,seasonal_naive,WQL,0.7019708925629169,0.6997948417158099,0.7041284180754896,1.0,1115,1
++known and past covariates,seasonal_naive,WQL,0.6992286379817042,0.6970548031874595,0.7013799319722261,1.0,1115,1
+"+known covariates, cross-learning",seasonal_naive,WQL,0.6956617476436728,0.6933164520970894,0.697928033051383,1.0,1115,1
+history only,seasonal_naive,WQL,0.47736864750084984,0.4752545320051857,0.47955715371313684,1.0,1115,1
+seasonal_naive,seasonal_naive,WQL,0.0,0.0,0.0,0.5,1115,1

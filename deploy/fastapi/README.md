@@ -1,6 +1,6 @@
 # Chronos-2 forecasting service (FastAPI + Docker, CPU)
 
-A small HTTP service that serves probabilistic forecasts from Chronos-2 on CPU, used in article 5
+A small HTTP service that serves probabilistic forecasts from Chronos-2 on CPU, used in Part 5
 of the series. Every request goes through the same data checklist as the notebooks
 (`c2p.data.validate_and_prepare`): timestamps are converted to UTC, missing timestamps become
 missing values on a regular grid, and only the most recent 8,192 steps of each series are kept.

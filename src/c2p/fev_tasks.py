@@ -1,6 +1,6 @@
 """Load a published fev-bench task and restate it in this repository's own protocol.
 
-Article 3 replicates the EPF-DE task of fev-bench (German day-ahead electricity price with the
+Part 3 replicates the EPF-DE task of fev-bench (German day-ahead electricity price with the
 grid operator's load and renewable forecasts as known covariates) before applying the same
 design to Spanish prices. Replicating it means using the *published* task definition rather than
 a similar-looking one of our own, so this module does two things:
@@ -18,6 +18,7 @@ step. Without it, "we replicated EPF-DE" would be an assertion rather than a tes
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -28,6 +29,14 @@ from c2p.schema import EVAL_QUANTILES, ID_COL, TIMESTAMP_COL
 
 if TYPE_CHECKING:
     import fev
+
+__all__ = [
+    "EPF_DE",
+    "assert_cutoffs_match",
+    "load_fev_task",
+    "task_backtest_config",
+    "task_series_frame",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -66,24 +75,54 @@ def load_fev_task(dataset_config: str = EPF_DE, *, tasks_url: str = FEV_BENCH_TA
     return task
 
 
-def task_series_frame(task: fev.Task) -> pd.DataFrame:
+def task_series_frame(task: fev.Task, static_columns: Sequence[str] = ()) -> pd.DataFrame:
     """Flatten a fev task's dataset into a series frame (see :mod:`c2p.schema`).
 
     One row per (series, timestamp), with the task's target and every dynamic column it
-    declares. Static columns are dropped: Chronos-2 takes covariates as series, and a constant
-    per series carries no information for a single-series task.
+    declares. Numeric columns become ``float64``; a dynamic column of strings (a holiday type,
+    a promotion code) becomes a ``category``, which is how Chronos-2 is told to treat it as
+    categorical.
+
+    Static attributes (one value per series: a store type, a region) are dropped unless they
+    are named in ``static_columns``. Chronos-2 has no input for them: it takes covariates as
+    series, so the only way in is a column that repeats the value at every timestamp, which is
+    what ``static_columns`` builds. Whether such a column can tell the model anything is a
+    question to measure, not to assume (notebook 10 does).
     """
     dataset = task.load_full_dataset()
+    static_columns = list(static_columns)
     columns = [task.target, *task.known_dynamic_columns, *task.past_dynamic_columns]
     frames = []
     for record in dataset:
         timestamps = pd.DatetimeIndex(record[task.timestamp_column]).tz_localize(None)
-        values = {column: np.asarray(record[column], dtype="float64") for column in columns}
+        values: dict[str, object] = {column: _dynamic_values(record[column]) for column in columns}
+        if missing := [column for column in static_columns if column not in record]:
+            raise ValueError(f"The task's dataset has no static columns {missing}.")
+        values.update({column: _static_value(record[column]) for column in static_columns})
         frames.append(
             pd.DataFrame({ID_COL: str(record[task.id_column]), TIMESTAMP_COL: timestamps, **values})
         )
     frame = pd.concat(frames, ignore_index=True)
+    columns = [*columns, *static_columns]
+    for column in columns:
+        if not pd.api.types.is_numeric_dtype(frame[column]):
+            frame[column] = frame[column].astype("category")
     return frame.sort_values([ID_COL, TIMESTAMP_COL], kind="stable", ignore_index=True)
+
+
+def _static_value(value: object) -> float | str:
+    """One static attribute as a float, or as text when it is not a number (None included)."""
+    if isinstance(value, bool | int | float | np.number):
+        return float(value)
+    return "missing" if value is None else str(value)
+
+
+def _dynamic_values(values: object) -> np.ndarray:
+    """A dynamic column of one record as float64, or as strings when it is not numeric."""
+    array = np.asarray(values)
+    if array.dtype.kind in "biuf":
+        return array.astype("float64")
+    return array.astype(object)
 
 
 def task_backtest_config(
@@ -99,7 +138,7 @@ def task_backtest_config(
     ----------
     with_covariates
         Declare the task's known dynamic columns as known covariates. ``False`` gives the same
-        task without them, which is the ablation article 3 is built on.
+        task without them, which is the ablation Part 3 is built on.
     n_windows
         Use fewer windows than the task defines (for a fast smoke run). The cutoffs then no
         longer match the published ones, so :func:`assert_cutoffs_match` will refuse them.

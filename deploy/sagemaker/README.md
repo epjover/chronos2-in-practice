@@ -1,6 +1,6 @@
 # Chronos-2 on a SageMaker real-time endpoint
 
-The managed counterpart to `deploy/fastapi`, used in article 5. The handler speaks the same JSON
+The managed counterpart to `deploy/fastapi`, used in Part 5. The handler speaks the same JSON
 as the FastAPI service, so the only thing that changes between the two is who runs the container.
 
 | File | Purpose |
@@ -12,7 +12,7 @@ as the FastAPI service, so the only thing that changes between the two is who ru
 > **This creates paid AWS resources.** A real-time endpoint bills for every hour it exists, even
 > at zero traffic. `deploy_endpoint.py` creates nothing unless you pass `--yes`, and
 > `--delete --yes` removes everything it made. Nothing in this repository has ever been run
-> against a real account: article 5's cloud costs are computed from locally measured throughput
+> against a real account: Part 5's cloud costs are computed from locally measured throughput
 > and the published rates in `data/reference/cloud_prices.csv`.
 
 ## Prerequisites
@@ -48,7 +48,7 @@ Step 4 does not remove the `model.tar.gz` in S3 (storage, cents per month) or an
 notebook instance you used to run these commands; those are separate meters. `aws s3 rm` and
 the Studio console handle them.
 
-To serve a fine-tuned model from article 4, package the checkpoint into the artifact:
+To serve a fine-tuned model from Part 4, package the checkpoint into the artifact:
 
 ```bash
 uv run --group cloud python deploy/sagemaker/deploy_endpoint.py --yes \

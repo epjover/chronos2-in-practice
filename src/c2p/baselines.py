@@ -2,14 +2,22 @@
 
 - ``SeasonalNaive``: repeats the last season (the reference of every skill score).
 - ``AutoETS``: automatic exponential smoothing from statsforecast.
+- ``MSTL``: a decomposition with several seasonal periods (daily and weekly for hourly data),
+  the classical model that fits a series with two cycles.
 - ``ChronosBolt``: the previous Chronos generation, univariate only.
+- ``PublishedForecast``: a forecast somebody else published before the cutoff (a grid
+  operator's day-ahead forecast), replayed as a model so it can sit in the same table.
 
-All baselines are univariate: each (item, target) pair is forecast on its own, multiple targets
-are handled by a loop, and covariate columns and ``future_covariates`` are ignored.
+The first four are univariate: each (item, target) pair is forecast on its own, multiple
+targets are handled by a loop, and covariate columns and ``future_covariates`` are ignored.
+``PublishedForecast`` is the opposite: it reads only ``future_covariates``.
+``ResidualForecaster`` combines the two: any forecaster, run on what a published forecast got
+wrong.
 """
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -33,11 +41,22 @@ from c2p.schema import (
     TARGET_COL,
     TARGET_NAME_COL,
     TIMESTAMP_COL,
+    Forecaster,
     quantile_col,
 )
 
 if TYPE_CHECKING:
     from chronos import ChronosBoltPipeline
+
+__all__ = [
+    "MSTL",
+    "AutoETS",
+    "ChronosBolt",
+    "KnownUntil",
+    "PublishedForecast",
+    "ResidualForecaster",
+    "SeasonalNaive",
+]
 
 # statsforecast's ETS only fits seasonal models up to this period; above it, AutoETS silently
 # falls back to a non-seasonal model.
@@ -369,8 +388,330 @@ def _interpolate_linear(values: np.ndarray, *, label: str) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------------------------
+# MSTL
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MSTL(_StatsForecastBaseline):
+    """Multiple seasonal-trend decomposition (statsforecast ``MSTL``) with normal intervals.
+
+    The series is split by LOESS into one seasonal component per period, a trend and a
+    remainder. Each seasonal component is carried forward by repeating its last cycle, and the
+    trend plus remainder is forecast by a non-seasonal ``AutoETS``, whose intervals become the
+    quantiles (level L gives the quantiles (1 - L/100) / 2 and 1 - (1 - L/100) / 2).
+
+    This is the classical model that fits a series with a daily and a weekly cycle, which
+    ``AutoETS`` cannot represent (statsforecast's ETS stops at a period of 24).
+
+    Missing values are filled by linear interpolation, as in ``AutoETS`` and only inside this
+    baseline. Each series needs two cycles of the longest period.
+
+    Parameters
+    ----------
+    season_lengths
+        Seasonal periods in steps, e.g. ``(24, 168)`` for hourly data.
+    name
+        Model name used in results tables.
+    max_context
+        Fit on the last ``max_context`` steps of each series only; the default 2,016 is 12
+        weeks of hourly data. ``None`` uses the whole context. Must be at least
+        ``min_context``.
+    """
+
+    season_lengths: tuple[int, ...]
+    name: str = "mstl"
+    max_context: int | None = 2016
+
+    def __post_init__(self) -> None:
+        lengths = tuple(self.season_lengths)
+        if not lengths or any(
+            isinstance(n, bool) or not isinstance(n, int) or n < 2 for n in lengths
+        ):
+            raise ValueError(
+                f"season_lengths must be integers of at least 2, got {self.season_lengths!r}."
+            )
+        if len(set(lengths)) != len(lengths):
+            raise ValueError(f"season_lengths has repeated periods: {list(lengths)}.")
+        object.__setattr__(self, "season_lengths", lengths)
+        if self.max_context is not None and self.max_context < self.min_context:
+            raise ValueError(
+                f"max_context must be at least {self.min_context} (two cycles of the longest "
+                f"period, {max(lengths)} steps), got {self.max_context}."
+            )
+
+    @property
+    def min_context(self) -> int:
+        """Fewest points per series: two cycles of the longest seasonal period."""
+        return 2 * max(self.season_lengths)
+
+    def _model(self) -> sf_models.MSTL:
+        return sf_models.MSTL(
+            season_length=list(self.season_lengths),
+            trend_forecaster=sf_models.AutoETS(model="ZZN"),
+            alias="MSTL",
+        )
+
+    def _prepare_series(self, values: np.ndarray, label: str) -> np.ndarray:
+        if self.max_context is not None:
+            values = values[-self.max_context :]
+        if len(values) < self.min_context:
+            raise ValueError(
+                f"Series {label} has {len(values)} points, but MSTL(season_lengths="
+                f"{self.season_lengths}) needs at least {self.min_context}: two cycles of the "
+                "longest period."
+            )
+        return _interpolate_linear(values, label=label)
+
+
+# --------------------------------------------------------------------------------------------
+# A published forecast, replayed
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PublishedForecast:
+    """A forecast published before the cutoff, replayed as a model.
+
+    Some datasets carry the forecast a professional made at the time: the Spanish table has
+    the grid operator's day-ahead load forecast next to the load. Passing that column to the
+    backtest as a known covariate and wrapping it in this class scores it on the same windows
+    and with the same metrics as every other model, which is the strongest reference a table
+    can have.
+
+    The published value is a point forecast, so it is returned as ``predictions`` and as every
+    quantile. Read the metrics accordingly: MASE and WAPE are the published forecast's own;
+    WQL of a forecast with no spread equals its WAPE when the levels are symmetric around the
+    median, so it is still comparable with the WQL of a probabilistic model; coverage is not
+    meaningful (an interval of zero width covers nothing).
+
+    Only use it with a column that was available at the cutoff. The class cannot check that.
+
+    Parameters
+    ----------
+    column
+        Name of the known-future covariate that holds the published forecast.
+    name
+        Model name used in results tables.
+    """
+
+    column: str
+    name: str = "published_forecast"
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Return the published column of ``future_covariates`` as the forecast of one target."""
+        targets, levels = validate_forecast_inputs(
+            context,
+            target=target,
+            quantile_levels=quantile_levels,
+            prediction_length=prediction_length,
+            freq=freq,
+        )
+        if len(targets) != 1:
+            raise ValueError(
+                f"{self.name} replays one published forecast for one target, got {targets}."
+            )
+        if future_covariates is None or self.column not in future_covariates.columns:
+            raise ValueError(
+                f"{self.name} needs {self.column!r} in future_covariates: declare it in "
+                "BacktestConfig(known_covariates=...)."
+            )
+        published = future_covariates[self.column].to_numpy(dtype="float64")
+        if np.isnan(published).any():
+            raise ValueError(
+                f"{self.column!r} has missing values in the horizon; a published forecast with "
+                "holes cannot be scored as a model."
+            )
+        columns = {
+            ID_COL: future_covariates[ID_COL].to_numpy(),
+            TIMESTAMP_COL: future_covariates[TIMESTAMP_COL].to_numpy(),
+            TARGET_NAME_COL: targets[0],
+            PREDICTION_COL: published,
+        }
+        quantiles = {quantile_col(level): published for level in levels}
+        return finalize_forecast(
+            pd.DataFrame(columns | quantiles),
+            context=context,
+            targets=targets,
+            quantile_levels=levels,
+            prediction_length=prediction_length,
+            freq=freq,
+            model_name=self.name,
+        )
+
+
+class ResidualForecaster:
+    """Forecast the error of a published forecast with ``base``, and add the forecast back.
+
+    The context's target is replaced by ``target - column`` (what the published forecast got
+    wrong in the past), ``base`` forecasts that residual on its own, and the published values
+    for the horizon are added to its point forecast and to every quantile. The published
+    forecast carries the level and the shape; the model only has to learn whether its errors
+    persist. The quantiles are therefore the model's uncertainty about the residual, placed
+    around the published value.
+
+    Parameters
+    ----------
+    base
+        Any ``Forecaster``; it receives the residual as a single univariate target.
+    column
+        Known-future covariate that holds the published forecast (present in the context too).
+    name
+        Model name used in results tables; defaults to ``"<base.name>_on_<column>_error"``.
+    """
+
+    def __init__(self, base: Forecaster, column: str, *, name: str | None = None) -> None:
+        self.base = base
+        self.column = column
+        self.name = name or f"{base.name}_on_{column}_error"
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Forecast one target as the published forecast plus ``base``'s forecast of its error."""
+        targets, levels = validate_forecast_inputs(
+            context,
+            target=target,
+            quantile_levels=quantile_levels,
+            prediction_length=prediction_length,
+            freq=freq,
+        )
+        if len(targets) != 1:
+            raise ValueError(f"{self.name} corrects one published forecast, got {targets}.")
+        if self.column not in context.columns:
+            raise ValueError(f"{self.name} needs {self.column!r} in the context.")
+        if future_covariates is None or self.column not in future_covariates.columns:
+            raise ValueError(
+                f"{self.name} needs {self.column!r} in future_covariates: declare it in "
+                "BacktestConfig(known_covariates=...)."
+            )
+        name = targets[0]
+        residual = context[[ID_COL, TIMESTAMP_COL]].assign(
+            **{name: context[name].to_numpy("float64") - context[self.column].to_numpy("float64")}
+        )
+        forecast = self.base.predict(
+            residual,
+            prediction_length=prediction_length,
+            quantile_levels=levels,
+            freq=freq,
+            target=name,
+        )
+        published = future_covariates[[ID_COL, TIMESTAMP_COL, self.column]]
+        merged = forecast.merge(published, on=[ID_COL, TIMESTAMP_COL], how="left", validate="1:1")
+        offset = merged[self.column].to_numpy("float64")
+        if np.isnan(offset).any():
+            raise ValueError(f"{self.column!r} has missing values in the horizon.")
+        for column in (PREDICTION_COL, *(quantile_col(level) for level in levels)):
+            merged[column] = merged[column].to_numpy("float64") + offset
+        return finalize_forecast(
+            merged.drop(columns=self.column),
+            context=context,
+            targets=targets,
+            quantile_levels=levels,
+            prediction_length=prediction_length,
+            freq=freq,
+            model_name=self.name,
+        )
+
+
+class KnownUntil:
+    """Let ``base`` know its future covariates only for the first ``steps`` steps of the horizon.
+
+    The known covariates of every later step are replaced by NaN before ``base`` sees them.
+    ``Chronos2Pipeline.predict_df`` reads a NaN in ``future_df`` as "not known at this step"
+    (a ``future_df`` that is NaN everywhere gives the same forecast as no ``future_df``), so
+    this is how a covariate whose own forecast is shorter than the horizon reaches the model:
+    a day-ahead weather forecast under a week-ahead horizon, a promotion calendar that stops at
+    the end of the month.
+
+    Parameters
+    ----------
+    base
+        Any ``Forecaster`` that accepts NaN in its future covariates (``Chronos2Forecaster``).
+    steps
+        Number of leading horizon steps for which the covariates stay known; 0 hides them all.
+    name
+        Model name used in results tables; defaults to ``"<base.name>_known_until_<steps>"``.
+    """
+
+    def __init__(self, base: Forecaster, steps: int, *, name: str | None = None) -> None:
+        if steps < 0:
+            raise ValueError(f"steps must be >= 0, got {steps}.")
+        self.base = base
+        self.steps = steps
+        self.name = name or f"{base.name}_known_until_{steps}"
+
+    def predict(
+        self,
+        context: pd.DataFrame,
+        *,
+        prediction_length: int,
+        quantile_levels: Sequence[float],
+        freq: str,
+        target: str | Sequence[str] = TARGET_COL,
+        future_covariates: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Forecast with the future covariates hidden after the first ``steps`` steps."""
+        if future_covariates is None:
+            raise ValueError(
+                f"{self.name} needs future_covariates: declare them in "
+                "BacktestConfig(known_covariates=...)."
+            )
+        future = future_covariates.copy()
+        step = future.groupby(ID_COL, sort=False, observed=True)[TIMESTAMP_COL].rank(method="first")
+        late = (step > self.steps).to_numpy()
+        for column in future.columns.difference([ID_COL, TIMESTAMP_COL]):
+            if pd.api.types.is_numeric_dtype(future[column]):
+                future[column] = future[column].astype("float64")
+            future.loc[late, column] = np.nan
+        return self.base.predict(
+            context,
+            prediction_length=prediction_length,
+            quantile_levels=quantile_levels,
+            freq=freq,
+            target=target,
+            future_covariates=future,
+        )
+
+
+# --------------------------------------------------------------------------------------------
 # Chronos-Bolt
 # --------------------------------------------------------------------------------------------
+
+
+class _ClampNotice(logging.Filter):
+    """Drop the library's per-call notice about clamped quantile levels.
+
+    ``chronos_bolt`` logs it at every ``predict`` call, 365 times in a year of daily windows.
+    ``warn_untrained_levels`` says the same once per forecaster and adds the consequence.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "are not within the range of quantiles" not in record.getMessage()
+
+
+def _silence_clamp_notice() -> None:
+    """Attach :class:`_ClampNotice` to the library's logger, once."""
+    from chronos import chronos_bolt
+
+    if not any(isinstance(item, _ClampNotice) for item in chronos_bolt.logger.filters):
+        chronos_bolt.logger.addFilter(_ClampNotice())
 
 
 class ChronosBolt:
@@ -419,6 +760,8 @@ class ChronosBolt:
             )
         self.pipeline = pipeline
         self.name = name
+        self._reported_levels: set[tuple[float, ...]] = set()
+        _silence_clamp_notice()
 
     def __repr__(self) -> str:
         return f"ChronosBolt(name={self.name!r})"
@@ -441,7 +784,9 @@ class ChronosBolt:
             prediction_length=prediction_length,
             freq=freq,
         )
-        warn_untrained_levels(levels, self.pipeline.quantiles, model_name=self.name)
+        warn_untrained_levels(
+            levels, self.pipeline.quantiles, model_name=self.name, seen=self._reported_levels
+        )
         frames = [
             self.pipeline.predict_df(
                 context[[ID_COL, TIMESTAMP_COL, name]],

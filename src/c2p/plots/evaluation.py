@@ -3,8 +3,9 @@
 Three charts answer the three questions a backtest raises, in order: *which data did each
 forecast see* (:func:`plot_backtest_windows`), *is the model better than the baselines, and by
 enough to believe it* (:func:`plot_skill_scores`), and *are the prediction intervals honest*
-(:func:`plot_coverage`). A fourth, :func:`plot_what_if`, overlays the forecasts of one window
-under different inputs (part 3).
+(:func:`plot_coverage`). :func:`plot_reliability` extends the last question from two intervals
+to every quantile level, and :func:`plot_error_by_step` shows where in the horizon the error
+sits. :func:`plot_what_if` overlays the forecasts of one window under different inputs (part 3).
 
 They reuse the shared style of :mod:`c2p.plotting`, including its private axis helpers, so that
 a figure drawn here is indistinguishable from one drawn there; the alternative, restating the
@@ -45,6 +46,9 @@ __all__ = [
     "coverage_long",
     "plot_backtest_windows",
     "plot_coverage",
+    "plot_error_by_step",
+    "plot_interval_bars",
+    "plot_reliability",
     "plot_skill_scores",
     "plot_what_if",
     "window_schedule",
@@ -186,6 +190,7 @@ def plot_skill_scores(
     drop_baseline: bool = True,
     title: str | None = None,
     xlabel: str | None = None,
+    units: str = "windows",
     ax: Axes | None = None,
 ) -> Axes:
     """Horizontal bars of skill score per model with their bootstrap intervals.
@@ -193,7 +198,8 @@ def plot_skill_scores(
     ``skill`` is the output of ``c2p.eval.skill_table``: one row per model with ``skill``,
     ``ci_low``, ``ci_high``, ``win_rate`` and ``baseline``. Skills are drawn as percentages,
     sorted best first, with the win rate printed at the right. The baseline itself sits at
-    exactly 0 by construction and is dropped by default.
+    exactly 0 by construction and is dropped by default. ``units`` names what the win rate
+    counts: windows, or the series of a panel when ``skill_table`` was given ``unit=``.
     """
     required = ["model", "skill", "ci_low", "ci_high", "win_rate", "baseline"]
     missing = [column for column in required if column not in skill.columns]
@@ -207,7 +213,7 @@ def plot_skill_scores(
     with style_context():
         if ax is None:
             _, ax = plt.subplots(figsize=(8.0, 0.46 * len(rows) + 1.5), layout="constrained")
-        _draw_skill_bars(ax, rows, highlight)
+        _draw_skill_bars(ax, rows, highlight, units)
         _style_axes(ax, grid="none")
         ax.axvline(0, color=AXIS_COLOR, linewidth=1.0)
         ax.set_xlabel(
@@ -218,7 +224,7 @@ def plot_skill_scores(
     return ax
 
 
-def _draw_skill_bars(ax: Axes, rows: pd.DataFrame, highlight: str) -> None:
+def _draw_skill_bars(ax: Axes, rows: pd.DataFrame, highlight: str, units: str) -> None:
     positions = np.arange(len(rows))
     skills = 100 * rows["skill"].to_numpy(dtype="float64")
     low = 100 * rows["ci_low"].to_numpy(dtype="float64")
@@ -242,8 +248,8 @@ def _draw_skill_bars(ax: Axes, rows: pd.DataFrame, highlight: str) -> None:
         positions, skills, high, is_highlight, rows["win_rate"], strict=True
     ):
         ax.annotate(
-            f"{value:.1f}  ({win:.0%} of windows)",
-            (hi + 0.02 * span, y),
+            f"{value:.1f}  ({win:.0%} of {units})",
+            (max(hi, 0.0) + 0.02 * span, y),  # right of the zero line when the bar is negative
             va="center",
             ha="left",
             fontsize=9.5,
@@ -435,4 +441,186 @@ def plot_what_if(
         if ylabel is not None:
             ax.set_ylabel(ylabel)
         _legend_above(ax, handles, labels, title)
+    return ax
+
+
+# --- Reliability by level, error by horizon step -------------------------------------------
+
+
+def plot_reliability(
+    reliability: pd.DataFrame,
+    *,
+    colors: Mapping[str, str] = MODEL_COLORS,
+    title: str | None = None,
+    ax: Axes | None = None,
+) -> Axes:
+    """Calibration at every quantile level: observed frequency minus the level, per model.
+
+    ``reliability`` is the output of ``c2p.eval.reliability_table``: ``model``, ``level`` and
+    ``observed`` (the share of actuals at or below that quantile). The y axis is the gap in
+    percentage points, so a calibrated model sits on the zero line. A curve above zero on the
+    left and below it on the right is the signature of intervals that are too narrow: too many
+    actuals under the low quantiles and too many over the high ones.
+    """
+    required = ["model", "level", "observed"]
+    missing = [column for column in required if column not in reliability.columns]
+    if missing:
+        raise ValueError(f"reliability is missing the columns {missing}.")
+    if reliability.empty:
+        raise ValueError("reliability is empty.")
+    models = list(dict.fromkeys(reliability["model"]))
+    palette = assign_colors(models, fixed=colors)
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 4.2), layout="constrained")
+        handles = []
+        for model in models:
+            rows = reliability.loc[reliability["model"] == model].sort_values("level")
+            gap = 100.0 * (rows["observed"] - rows["level"])
+            (line,) = ax.plot(
+                rows["level"], gap, color=palette[model], linewidth=LINE_WIDTH, marker="o", ms=4.5
+            )
+            handles.append(line)
+        ax.axhline(0.0, color=INK_SECONDARY, linewidth=1.0, linestyle=(0, (4, 3)), zorder=1)
+        _style_axes(ax, grid="y")
+        ax.set_xticks(sorted(reliability["level"].unique()))
+        ax.xaxis.set_major_formatter(lambda x, _: f"{x:.0%}")
+        ax.yaxis.set_major_formatter(lambda y, _: f"{y:+.0f}")
+        ax.set_xlabel("Quantile level")
+        ax.set_ylabel("Actuals at or below the quantile,\npoints above or below the level")
+        _legend_above(ax, handles, models, title)
+    return ax
+
+
+def plot_error_by_step(
+    by_step: pd.DataFrame,
+    *,
+    metric: str = "WQL",
+    colors: Mapping[str, str] = MODEL_COLORS,
+    title: str | None = None,
+    xlabel: str = "Steps ahead",
+    ax: Axes | None = None,
+) -> Axes:
+    """Error against the horizon step, one line per model.
+
+    ``by_step`` is the output of ``c2p.eval.error_by_step``: ``model``, ``step`` and the metric
+    columns, each a share of the level at that step. A flat line is a model whose error does
+    not grow with the lead time; a bump is an hour of the day it finds hard.
+    """
+    required = ["model", "step", metric]
+    missing = [column for column in required if column not in by_step.columns]
+    if missing:
+        raise ValueError(f"by_step is missing the columns {missing}.")
+    if by_step.empty:
+        raise ValueError("by_step is empty.")
+    models = list(dict.fromkeys(by_step["model"]))
+    palette = assign_colors(models, fixed=colors)
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 4.2), layout="constrained")
+        handles = []
+        for model in models:
+            rows = by_step.loc[by_step["model"] == model].sort_values("step")
+            (line,) = ax.plot(
+                rows["step"], rows[metric], color=palette[model], linewidth=LINE_WIDTH
+            )
+            handles.append(line)
+        _style_axes(ax, grid="y")
+        ax.set_ylim(bottom=0.0)
+        ax.set_xlim(by_step["step"].min(), by_step["step"].max())
+        ax.yaxis.set_major_formatter(lambda y, _: f"{y:.0%}")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(f"{metric} at that step")
+        _legend_above(ax, handles, models, title)
+    return ax
+
+
+# --- A mean with its interval, per label ---------------------------------------------------
+
+
+def plot_interval_bars(
+    table: pd.DataFrame,
+    *,
+    label: str,
+    value: str = "mean",
+    low: str = "ci_low",
+    high: str = "ci_high",
+    value_format: str = "{:+.4f}",
+    highlight: str | None = None,
+    title: str | None = None,
+    xlabel: str | None = None,
+    ax: Axes | None = None,
+) -> Axes:
+    """Horizontal bars of a mean per label, each with its interval drawn and written out.
+
+    For tables such as ``c2p.explain.importance_summary``: one row per ``label`` with a
+    ``value`` and the bounds ``low`` and ``high``. Rows are sorted by value, largest at the
+    top. The number at the right of each bar is the value followed by its interval, so a
+    reader can see without a ruler whether an interval contains zero.
+    """
+    required = [label, value, low, high]
+    missing = [column for column in required if column not in table.columns]
+    if missing:
+        raise ValueError(f"table is missing the columns {missing}.")
+    if table.empty:
+        raise ValueError("table is empty.")
+    rows = table.sort_values(value)
+    values = rows[value].to_numpy("float64")
+    lows = rows[low].to_numpy("float64")
+    highs = rows[high].to_numpy("float64")
+    is_highlight = (rows[label] == highlight).to_numpy()
+    positions = np.arange(len(rows))
+    with style_context():
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8.0, 0.46 * len(rows) + 1.5), layout="constrained")
+        ax.barh(
+            positions,
+            values,
+            height=0.56,
+            color=np.where(is_highlight, BLUE, NEUTRAL_BAR),
+            zorder=2,
+        )
+        ax.errorbar(
+            values,
+            positions,
+            xerr=[values - lows, highs - values],
+            fmt="none",
+            ecolor=INK_SECONDARY,
+            elinewidth=1.1,
+            capsize=3.5,
+            zorder=3,
+        )
+        left, right = min(0.0, lows.min()), max(0.0, highs.max())
+        span = max(right - left, 1e-12)
+        for y, mean, lo, hi, strong in zip(
+            positions, values, lows, highs, is_highlight, strict=True
+        ):
+            text = (
+                f"{value_format.format(mean)}  "
+                f"[{value_format.format(lo)}, {value_format.format(hi)}]"
+            )
+            ax.annotate(
+                text,
+                (max(hi, 0.0) + 0.02 * span, y),
+                va="center",
+                ha="left",
+                fontsize=9.5,
+                color=INK_PRIMARY if strong else INK_SECONDARY,
+                fontweight="bold" if strong else "normal",
+            )
+        _style_axes(ax, grid="none")
+        ax.axvline(0, color=AXIS_COLOR, linewidth=1.0)
+        ax.set_yticks(positions, labels=rows[label].astype(str).tolist())
+        for tick, strong in zip(ax.get_yticklabels(), is_highlight, strict=True):
+            tick.set_color(INK_PRIMARY if strong else INK_SECONDARY)
+            tick.set_fontweight("bold" if strong else "normal")
+        ax.set_xlim(left - 0.05 * span, right + 0.75 * span)
+        ax.xaxis.set_visible(False)
+        ax.spines["bottom"].set_visible(False)
+        if xlabel is not None:
+            ax.set_xlabel(xlabel)
+            ax.xaxis.set_visible(True)
+            ax.set_xticks([])
+        if title is not None:
+            set_axes_title(ax, title)
     return ax

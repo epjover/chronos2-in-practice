@@ -1,4 +1,4 @@
-"""Tests for ``c2p.plots.production``: the throughput curve and the cost bars of article 5."""
+"""Tests for ``c2p.plots.production``: the throughput curve and the cost bars of Part 5."""
 
 from __future__ import annotations
 

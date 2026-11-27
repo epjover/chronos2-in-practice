@@ -1,6 +1,6 @@
 """Load the Spanish energy dataset and get series frames ready for Chronos-2.
 
-Article 1 walks through :func:`validate_and_prepare`, a checklist that turns a messy table
+Part 1 walks through :func:`validate_and_prepare`, a checklist that turns a messy table
 into a clean *series frame* (see :mod:`c2p.schema`): timestamps in naive UTC, one row per
 series and grid step, missing values as NaN. The module also builds future frames, adds
 calendar covariates and corrupts clean data on purpose for the "messy data" demo.
@@ -31,6 +31,23 @@ from pandas.tseries.offsets import BaseOffset
 
 from c2p.config import get_paths
 from c2p.schema import ID_COL, TARGET_COL, TIMESTAMP_COL
+
+__all__ = [
+    "CALENDAR_COLUMNS",
+    "DataReport",
+    "add_calendar_features",
+    "check_future_frame",
+    "download_spain_energy",
+    "drop_rows",
+    "inject_spike",
+    "load_energy_raw",
+    "load_weather_raw",
+    "make_future_frame",
+    "mask_values",
+    "spain_energy_frame",
+    "spain_weather_frame",
+    "validate_and_prepare",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -804,9 +821,11 @@ def check_future_frame(
     """Raise ``ValueError`` unless ``future`` is a valid known-covariate frame for ``context``.
 
     Valid means (as ``Chronos2Pipeline.predict_df`` expects): no target column, no column
-    missing from the context, the same series ids (same values and type), exactly
+    missing from the context, the same series ids (same values and type), and exactly
     ``prediction_length`` rows per series on the grid steps right after each series' last
-    context timestamp, and no NaN.
+    context timestamp. One check is stricter than the library: no NaN. ``predict_df`` accepts
+    a NaN here and reads it as "not known at this step" (see ``c2p.baselines.KnownUntil``),
+    which is rarely what a hole in a covariate feed means, so this check asks for every step.
     """
     _require_columns(context, [id_column, timestamp_column], "The context frame")
     _require_columns(future, [id_column, timestamp_column], "The future frame")

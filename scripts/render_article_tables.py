@@ -18,7 +18,7 @@ Run it after editing an article; the images are regenerated from scratch each ti
 
 Usage::
 
-    uv run python scripts/render_article_tables.py            # all five articles
+    uv run python scripts/render_article_tables.py            # every article
     uv run python scripts/render_article_tables.py --only 05  # one article
 """
 
@@ -44,6 +44,8 @@ from c2p.plotting import GRID_COLOR, INK_PRIMARY, INK_SECONDARY, style_context
 TABLE_RE = re.compile(r"(?m)^(\|[^\n]*\|)\n(\|[ :\-|]+\|)\n((?:\|[^\n]*\|\n?)+)")
 MONO_FONT = "DejaVu Sans Mono"
 WRAP_AT = 42  # characters per line inside a cell before wrapping
+NARROWER_WRAPS = (36, 30, 26, 22, 18)  # tried in turn when a table is too wide at WRAP_AT
+BASE_FONT, MIN_FONT = 9.5, 7.5  # points; a table is shrunk down to the smaller one, no further
 MAX_WIDTH_IN = 9.0  # inches; Medium renders images up to about 1,400 px wide
 DPI = 200
 REPO_URL = f"https://github.com/{GITHUB_REPO}"
@@ -108,13 +110,18 @@ def render_table(header: list[Cell], rows: list[list[Cell]], aligns: list[str], 
     """Draw one table to ``path`` and return it."""
     n_cols = len(header)
     grid = [header, *rows]
-    wrapped = [[wrap_cell(cell) for cell in row] for row in grid]
-    col_chars = [
-        max(max(len(line) for line in wrapped[r][c]) for r in range(len(grid)))
-        for c in range(n_cols)
-    ]
-    # Column widths in inches: proportional to the longest line, with a floor for short columns.
-    widths = [max(0.9, 0.085 * chars + 0.35) for chars in col_chars]
+    # The text can shrink from BASE_FONT to MIN_FONT and no further, so a table wider than that
+    # allows would have its cells run into each other: wrap it tighter until it fits.
+    for wrap_at in (WRAP_AT, *NARROWER_WRAPS):
+        wrapped = [[wrap_cell(cell, wrap_at) for cell in row] for row in grid]
+        col_chars = [
+            max(max(len(line) for line in wrapped[r][c]) for r in range(len(grid)))
+            for c in range(n_cols)
+        ]
+        # Column widths in inches: proportional to the longest line, with a floor.
+        widths = [max(0.9, 0.085 * chars + 0.35) for chars in col_chars]
+        if sum(widths) * MIN_FONT / BASE_FONT <= MAX_WIDTH_IN:
+            break
     scale = min(1.0, MAX_WIDTH_IN / sum(widths))
     widths = [w * scale for w in widths]
     row_lines = [max(len(lines) for lines in row) for row in wrapped]
@@ -122,7 +129,7 @@ def render_table(header: list[Cell], rows: list[list[Cell]], aligns: list[str], 
     pad = 0.12
     row_h = [lines * line_h + 2 * pad for lines in row_lines]
     fig_w, fig_h = sum(widths), sum(row_h) + 0.08
-    font = 9.5 if scale == 1.0 else max(7.5, 9.5 * scale)
+    font = BASE_FONT if scale == 1.0 else max(MIN_FONT, BASE_FONT * scale)
 
     with style_context():
         fig = plt.figure(figsize=(fig_w, fig_h), dpi=DPI)
@@ -253,6 +260,11 @@ def convert_article(
         return f"![Table {counter}: articles/medium/{rel}]({rel})\n\n{caption}\n"
 
     converted = TABLE_RE.sub(replace, text)
+    # An article that lost a table must not leave the old image behind for the next commit.
+    current = {f"{stem}_table_{k}.png" for k in range(1, counter + 1)}
+    for image in tables_dir.glob(f"{stem}_table_*.png"):
+        if image.name not in current:
+            image.unlink()
     converted = absolute_links(converted, root)
     converted, _ = link_parts(converted, part_urls or {})
     # Figures live in results/figures; from articles/medium that is one level deeper.
@@ -288,7 +300,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"{total} tables rendered to {out_dir.relative_to(root) / 'tables'}")
     for article, parts in pending.items():
         print(
-            f"Part {article[1]}: link to Part {', '.join(parts)} still points to '#'; add its "
+            f"Part {article[1]}: link to Part {', '.join(sorted(set(parts)))} still points to "
+            f"'#'; add its "
             f"address to articles/{PART_URLS_FILE} once it is published."
         )
     return 0

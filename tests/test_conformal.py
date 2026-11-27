@@ -13,6 +13,7 @@ import pytest
 
 from c2p.conformal import (
     STEP_COL,
+    AdaptiveConformalForecaster,
     ConformalForecaster,
     calibrate,
     conformalize,
@@ -206,3 +207,125 @@ def test_coverage_by_period_reports_one_row_per_model_and_month():
     assert out["period"].tolist() == ["2017-07", "2017-08", "2017-09"]
     assert out["n"].sum() == len(frame)
     assert out["nominal"].to_numpy() == pytest.approx(0.8)
+
+
+# --- adaptive calibration -------------------------------------------------------------------
+
+
+class _NarrowForecaster:
+    """A forecaster whose band has a fixed half-width around a constant level."""
+
+    name = "narrow"
+
+    def __init__(self, width: float = 1.0) -> None:
+        self.width = width
+
+    def predict(self, context, *, prediction_length, quantile_levels, freq, target, **_):
+        last = context[TIMESTAMP_COL].max()
+        rows = []
+        for step in range(1, prediction_length + 1):
+            row = {
+                ID_COL: "s",
+                TARGET_NAME_COL: target,
+                TIMESTAMP_COL: last + pd.Timedelta(hours=step),
+                PREDICTION_COL: 100.0,
+            }
+            for level in quantile_levels:
+                row[quantile_col(level)] = 100.0 + (level - 0.5) * 2 * self.width
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+
+def _walk(model, noise_by_window: list[float], *, seed: int = 0) -> pd.DataFrame:
+    """Call ``model`` once per window on a growing context; return its forecasts with actuals."""
+    rng = np.random.default_rng(seed)
+    start = pd.Timestamp("2018-01-01")
+    context = pd.DataFrame({ID_COL: ["s"], TIMESTAMP_COL: [start], "y": [100.0]})
+    frames = []
+    for window, noise in enumerate(noise_by_window):
+        forecast = model.predict(
+            context, prediction_length=HORIZON, quantile_levels=LEVELS, freq="h", target="y"
+        )
+        actual = 100.0 + rng.normal(0.0, noise, size=HORIZON)
+        frames.append(forecast.assign(**{ACTUAL_COL: actual, WINDOW_COL: window}))
+        realized = pd.DataFrame(
+            {ID_COL: "s", TIMESTAMP_COL: forecast[TIMESTAMP_COL].to_numpy(), "y": actual}
+        )
+        context = pd.concat([context, realized], ignore_index=True)
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_adaptive_forecaster_without_new_data_matches_the_static_calibration():
+    calibration_frame = toy_backtest(60)
+    static = ConformalForecaster(
+        _NarrowForecaster(), calibrate(calibration_frame, quantile_levels=LEVELS)
+    )
+    adaptive = AdaptiveConformalForecaster(_NarrowForecaster(), calibration_frame)
+    context = pd.DataFrame({ID_COL: ["s"], TIMESTAMP_COL: [pd.Timestamp("2018-01-01")], "y": [1.0]})
+    kwargs = {"prediction_length": HORIZON, "quantile_levels": LEVELS, "freq": "h", "target": "y"}
+    pd.testing.assert_frame_equal(
+        adaptive.predict(context, **kwargs), static.predict(context, **kwargs)
+    )
+    assert adaptive.name == "narrow+adaptive_conformal_additive"
+
+
+def test_rolling_pool_recovers_coverage_after_the_noise_doubles():
+    # Calibrated on noise 2, then the series becomes twice as noisy for 150 forecasts.
+    calibration_frame = toy_backtest(60, noise=2.0)
+    noise = [4.0] * 150
+    static = ConformalForecaster(
+        _NarrowForecaster(), calibrate(calibration_frame, quantile_levels=LEVELS, by_step=False)
+    )
+    rolling = AdaptiveConformalForecaster(
+        _NarrowForecaster(), calibration_frame, window=30, by_step=False
+    )
+    late = slice(60 * HORIZON, None)  # after the pool has turned over twice
+    static_coverage = coverage(_walk(static, noise).iloc[late], 0.1, 0.9)
+    rolling_coverage = coverage(_walk(rolling, noise).iloc[late], 0.1, 0.9)
+    assert static_coverage < 0.6
+    assert rolling_coverage > 0.75
+    assert rolling.history[-1]["n_pool_forecasts"] == 30
+
+
+def test_aci_lowers_the_target_miss_rate_when_forecasts_miss_too_often():
+    calibration_frame = toy_backtest(60, noise=2.0)
+    aci = AdaptiveConformalForecaster(
+        _NarrowForecaster(), calibration_frame, gamma=0.05, by_step=False
+    )
+    frame = _walk(aci, [4.0] * 150)
+    assert aci.miss_rates[(0.1, 0.9)] < 0.2  # aims wider than nominal after under-covering
+    static = ConformalForecaster(
+        _NarrowForecaster(), calibrate(calibration_frame, quantile_levels=LEVELS, by_step=False)
+    )
+    late = slice(60 * HORIZON, None)
+    assert coverage(frame.iloc[late], 0.1, 0.9) > coverage(
+        _walk(static, [4.0] * 150).iloc[late], 0.1, 0.9
+    )
+
+
+def test_adaptive_forecaster_only_learns_from_fully_realized_forecasts():
+    adaptive = AdaptiveConformalForecaster(_NarrowForecaster(), toy_backtest(10), window=None)
+    context = pd.DataFrame({ID_COL: ["s"], TIMESTAMP_COL: [pd.Timestamp("2018-01-01")], "y": [1.0]})
+    kwargs = {"prediction_length": HORIZON, "quantile_levels": LEVELS, "freq": "h", "target": "y"}
+    first = adaptive.predict(context, **kwargs)
+    partial = pd.DataFrame(
+        {ID_COL: "s", TIMESTAMP_COL: first[TIMESTAMP_COL].iloc[:2].to_numpy(), "y": [1.0, 2.0]}
+    )
+    adaptive.predict(pd.concat([context, partial], ignore_index=True), **kwargs)
+    assert adaptive.history[-1]["n_pool_forecasts"] == 10  # two of four hours: not absorbed
+
+
+def test_adaptive_forecaster_validates_its_arguments():
+    frame = toy_backtest(5)
+    with pytest.raises(ValueError, match="window"):
+        AdaptiveConformalForecaster(_NarrowForecaster(), frame, window=0)
+    with pytest.raises(ValueError, match="gamma"):
+        AdaptiveConformalForecaster(_NarrowForecaster(), frame, gamma=-0.1)
+    with pytest.raises(ValueError, match="window"):
+        AdaptiveConformalForecaster(_NarrowForecaster(), frame.drop(columns=WINDOW_COL))
+    model = AdaptiveConformalForecaster(_NarrowForecaster(), frame)
+    context = pd.DataFrame({ID_COL: ["s"], TIMESTAMP_COL: [pd.Timestamp("2018-01-01")], "y": [1.0]})
+    with pytest.raises(ValueError, match="single target"):
+        model.predict(
+            context, prediction_length=2, quantile_levels=LEVELS, freq="h", target=["y", "z"]
+        )

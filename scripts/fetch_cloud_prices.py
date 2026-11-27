@@ -1,6 +1,6 @@
 """Fetch SageMaker on-demand rates from the AWS Price List API into ``data/reference``.
 
-Article 5 puts a cost per million forecasts next to a measured throughput, and a cost table is
+Part 5 puts a cost per million forecasts next to a measured throughput, and a cost table is
 only worth printing if its rates are checkable. Secondary sources for SageMaker pricing disagree
 by up to 40% on the same instance, so this script reads the rates from the one place AWS
 publishes them: the Price List Bulk API, which needs no credentials and stamps every offer file
@@ -34,7 +34,7 @@ BASE_URL = "https://pricing.us-east-1.amazonaws.com"
 SERVICE_CODE = "AmazonSageMaker"
 REGION_INDEX = f"{BASE_URL}/offers/v1.0/aws/{SERVICE_CODE}/current/region_index.json"
 
-# The meters article 5 compares: a real-time endpoint (what the FastAPI service maps onto), the
+# The meters Part 5 compares: a real-time endpoint (what the FastAPI service maps onto), the
 # batch-transform meter for the nightly-job alternative, and the training meter for fine-tuning.
 COMPONENTS = ("Hosting", "BatchTransform", "Training", "Spot Training")
 

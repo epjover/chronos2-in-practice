@@ -7,7 +7,7 @@ prints the plan and does nothing unless you pass ``--yes``, it tags everything i
 order AWS requires.
 
 What it builds: a ``model.tar.gz`` holding ``inference.py`` and the ``c2p`` package (optionally
-with a fine-tuned checkpoint from article 4), uploaded to S3 and served by the managed PyTorch
+with a fine-tuned checkpoint from Part 4), uploaded to S3 and served by the managed PyTorch
 inference container. The handler in ``inference.py`` speaks the same JSON as the FastAPI
 service, so ``deploy/fastapi/smoke_test.py``'s payloads work against both.
 
@@ -21,7 +21,7 @@ Usage from the repository root::
     uv run --group cloud python deploy/sagemaker/deploy_endpoint.py --delete --yes
 
 **This script creates paid AWS resources.** ``--plan`` (the default) creates nothing. Nothing in
-this repository was ever run against a real account: the numbers in article 5 come from the
+this repository was ever run against a real account: the numbers in Part 5 come from the
 local service and from the published rates in ``data/reference/cloud_prices.csv``.
 """
 

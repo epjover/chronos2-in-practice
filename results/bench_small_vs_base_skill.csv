@@ -1,3 +1,0 @@
-model,baseline,metric,skill,ci_low,ci_high,win_rate,n_units
-chronos-2,chronos-2,WQL,0.0,0.0,0.0,0.5,365
-chronos-2-small,chronos-2,WQL,-0.24847419061649156,-0.2999243530491398,-0.20321037856704527,0.29315068493150687,365

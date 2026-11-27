@@ -5,7 +5,7 @@ committed to the repository.
 
 | File | Contents | Source |
 | --- | --- | --- |
-| `cloud_prices.csv` | On-demand SageMaker hosting and serverless rates for `us-east-1`, one row per SKU, with the effective date and the offer-file version. Columns: `service, component, instance, vcpu, gpu, memory, region, price_usd, unit, sku, effective_date, offer_version, offer_published, source, checked_on`. | AWS Price List Bulk API, fetched by `scripts/fetch_cloud_prices.py` (no credentials, nothing created). Refresh before publishing article 5. |
+| `cloud_prices.csv` | On-demand SageMaker hosting and serverless rates for `us-east-1`, one row per SKU, with the effective date and the offer-file version. Columns: `service, component, instance, vcpu, gpu, memory, region, price_usd, unit, sku, effective_date, offer_version, offer_published, source, checked_on`. | AWS Price List Bulk API, fetched by `scripts/fetch_cloud_prices.py` (no credentials, nothing created). Refresh before publishing Part 5. |
 | `paper_benchmarks.csv` | Published skill scores of Chronos-2 and other pretrained forecasting models on three benchmarks. Long format: `model, benchmark, skill_score_pct, source`. | Ansari et al. (2025), *Chronos-2: From Univariate to Universal Forecasting*, technical report ([arXiv:2510.15821](https://arxiv.org/abs/2510.15821)), Tables 3-5. |
 
 ## `paper_benchmarks.csv`

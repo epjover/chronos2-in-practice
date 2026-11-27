@@ -21,7 +21,7 @@ so this script never pretends it does. It reports three things instead:
    it is the cheaper way to serve the same volume. That number depends only on the published
    rates, so it is exact, and it is usually the number that decides the question.
 
-It writes four tables and the two figures of article 5's cost section, so every number and
+It writes four tables and the two figures of Part 5's cost section, so every number and
 every pixel in that section comes from committed code rather than from a shell one-liner.
 
 Usage::

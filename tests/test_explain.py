@@ -776,3 +776,67 @@ def test_chronos2_calendar_covariates_on_spanish_prices():
         forecaster, context, future, masking="drop", value="wql_reduction", actuals=actuals, **run
     )
     assert wql.efficiency_gap() < 1e-9
+
+
+# --------------------------------------------------------------------------------------------
+# importance_summary
+# --------------------------------------------------------------------------------------------
+
+
+def test_importance_summary_reports_mean_interval_and_share_positive() -> None:
+    from c2p.explain import importance_summary
+
+    rng = np.random.default_rng(0)
+    per_window = pd.DataFrame(
+        {
+            "item_id": [f"w{i}" for i in range(40)] * 2,
+            "player": ["strong"] * 40 + ["noise"] * 40,
+            "shapley": np.concatenate([1.0 + 0.1 * rng.normal(size=40), rng.normal(size=40)]),
+        }
+    )
+    table = importance_summary(per_window, value="shapley").set_index("player")
+    assert table.loc["strong", "mean"] == pytest.approx(per_window["shapley"][:40].mean())
+    assert table.loc["strong", "ci_low"] > 0.9  # clear of zero
+    assert table.loc["noise", "ci_low"] < 0 < table.loc["noise", "ci_high"]
+    assert table.loc["strong", "share_positive"] == 1.0
+    assert (table["n_windows"] == 40).all()
+    again = importance_summary(per_window, value="shapley").set_index("player")
+    pd.testing.assert_frame_equal(table, again)
+
+
+def test_importance_summary_widens_the_interval_for_runs_of_similar_windows() -> None:
+    from c2p.explain import importance_summary
+
+    # Twenty runs of seven equal values: consecutive windows carry the same information.
+    values = np.repeat(np.random.default_rng(0).normal(size=20), 7)
+    per_window = pd.DataFrame({"player": "p", "shapley": values})
+    single = importance_summary(per_window, value="shapley").iloc[0]
+    blocks = importance_summary(per_window, value="shapley", block_length=7).iloc[0]
+    assert blocks["mean"] == single["mean"]
+    assert blocks["ci_high"] - blocks["ci_low"] > 1.5 * (single["ci_high"] - single["ci_low"])
+    with pytest.raises(ValueError, match="block_length"):
+        importance_summary(per_window, value="shapley", block_length=0)
+    with pytest.raises(ValueError, match="exceeds"):
+        importance_summary(per_window, value="shapley", block_length=141)
+
+
+def test_importance_summary_groups_by_several_columns_and_validates() -> None:
+    from c2p.explain import importance_summary
+
+    per_window = pd.DataFrame(
+        {
+            "player": ["a", "a", "a", "a"],
+            "method": ["x", "x", "y", "y"],
+            "importance": [1.0, 3.0, -1.0, -3.0],
+        }
+    )
+    table = importance_summary(per_window, value="importance", by=("player", "method"))
+    assert table[["player", "method"]].to_numpy().tolist() == [["a", "x"], ["a", "y"]]
+    assert table["mean"].tolist() == [2.0, -2.0]
+    assert table["share_positive"].tolist() == [1.0, 0.0]
+    with pytest.raises(ValueError, match="lacks the columns"):
+        importance_summary(per_window, value="shapley")
+    with pytest.raises(ValueError, match="is empty"):
+        importance_summary(per_window.iloc[:0], value="importance")
+    with pytest.raises(ValueError, match="NaN"):
+        importance_summary(per_window.assign(importance=np.nan), value="importance")

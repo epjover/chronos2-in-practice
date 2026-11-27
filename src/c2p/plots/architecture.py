@@ -1,4 +1,4 @@
-"""Schematic of how Chronos-2 turns a group of series into quantile forecasts (article 1).
+"""Schematic of how Chronos-2 turns a group of series into quantile forecasts (Part 1).
 
 Unlike every other figure of the series, this one draws a *description*, not a measurement: the
 stages come from the Chronos-2 technical report (Ansari et al., 2025,
@@ -21,7 +21,7 @@ the font of Excalidraw, shipped with the package under the SIL Open Font License
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib import resources
@@ -46,8 +46,11 @@ __all__ = [
     "Chronos2Sizes",
     "Stage",
     "chronos2_sizes",
+    "decision_stages",
     "hand_font",
     "plot_architecture",
+    "plot_decision_path",
+    "plot_stages",
 ]
 
 # --- Hand-drawn look ---------------------------------------------------------------------
@@ -486,8 +489,18 @@ def plot_architecture(
     title
         Figure title, centred above the column, or ``None`` for no title.
     """
-    sizes = sizes or Chronos2Sizes()
-    stages = _stages(sizes)
+    return plot_stages(_stages(sizes or Chronos2Sizes()), title=title)
+
+
+def plot_stages(stages: Sequence[Stage], *, title: str | None = None) -> Figure:
+    """Draw numbered stages top to bottom, joined by arrows, in the hand-drawn style.
+
+    The generic form of :func:`plot_architecture`: any sequence of :class:`Stage` becomes a
+    column of numbered boxes, each with its title, a sentence, optional nested boxes
+    (``sub``), an optional ``badge`` next to the title and an optional ``highlight`` fill.
+    """
+    if not stages:
+        raise ValueError("A diagram needs at least one stage.")
     text_width = COLUMN_WIDTH - 2 * _PAD_X - _NUMBER_WIDTH
     heights = [_stage_height(stage, text_width=text_width) for stage in stages]
     title_space = _FIGURE_TITLE_SPACE if title is not None else 0.0
@@ -518,3 +531,85 @@ def plot_architecture(
                 ha="center",
             )
     return fig
+
+
+# --- The decision path of the series -------------------------------------------------------
+
+DECISION_TITLE = "Chronos-2 on your data: the order in which to pull the levers"
+
+
+def decision_stages(measured: Mapping[str, str]) -> list[Stage]:
+    """The eight steps the series arrives at, each with the number that was measured for it.
+
+    ``measured`` maps a step key to the sentence printed in that step's "Measured" box, so the
+    drawing states what the results files say and nothing else: ``data``, ``baseline``,
+    ``covariates``, ``context``, ``finetune``, ``calibration``, ``serving`` and
+    ``monitoring``. ``scripts/series_summary.py`` builds it from ``results/``.
+    """
+    steps = (
+        (
+            "data",
+            "Put the series on a regular grid",
+            "A missing row shifts everything before it and nothing warns you. Reindex to the "
+            "frequency, leave gaps as NaN, never fill with 0, and do not pass freq unless you "
+            "have checked the grid yourself.",
+        ),
+        (
+            "baseline",
+            "Measure before you change anything",
+            "A rolling-origin backtest against the seasonal naive, a competent classical model "
+            "and any professional forecast you have. Sample every weekday, and resample "
+            "consecutive days in blocks.",
+        ),
+        (
+            "covariates",
+            "Give it what is known about the future",
+            "A covariate pays when you know its future values: published forecasts, prices, "
+            "promotions, a holiday flag. Skip the periodic calendar. If a professional "
+            "forecast of the target exists, forecast its errors instead.",
+        ),
+        (
+            "context",
+            "Set the context length once",
+            "Sweep it on your own series. 2,048 steps is a good default: the gain flattens "
+            "after about a thousand, and every doubling costs throughput.",
+        ),
+        (
+            "finetune",
+            "Fine-tune last, with a validation period and several seeds",
+            "LoRA first. Choose the budget on a validation backtest, not on the training loss, "
+            "and repeat the run with other seeds before you believe a gain of a few percent.",
+        ),
+        (
+            "calibration",
+            "Calibrate the intervals, and keep calibrating",
+            "A conformal correction costs no training. Learned once, it fixes the yearly "
+            "coverage; updated with each resolved forecast, it also holds the months it has "
+            "not seen.",
+        ),
+        (
+            "serving",
+            "Serve it where the idle time is cheapest",
+            "A batch job for a scheduled forecast, serverless for bursty low volume, a GPU "
+            "endpoint for high steady volume. Batch the requests on a GPU.",
+        ),
+        (
+            "monitoring",
+            "Watch the error and the coverage",
+            "Log every forecast with its input hash, join the actuals when they arrive, alert "
+            "once per episode, and look at coverage by month.",
+        ),
+    )
+    missing = [key for key, _, _ in steps if key not in measured]
+    if missing:
+        raise ValueError(f"measured lacks the steps {missing}.")
+    return [
+        Stage(title, detail, sub=(("Measured", measured[key]),)) for key, title, detail in steps
+    ]
+
+
+def plot_decision_path(
+    measured: Mapping[str, str], *, title: str | None = DECISION_TITLE
+) -> Figure:
+    """Draw the decision path of the series: eight numbered steps with their measured effect."""
+    return plot_stages(decision_stages(measured), title=title)

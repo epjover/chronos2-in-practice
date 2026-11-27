@@ -1,6 +1,6 @@
 """How stable are the latency numbers? Within-run spread and run-to-run drift, from the CSVs.
 
-Article 5 quotes one throughput figure per cell. This script answers the two questions a
+Part 5 quotes one throughput figure per cell. This script answers the two questions a
 reader should ask of such a figure before trusting it:
 
 1. **Within a run**: across the 30 timed calls of one cell, how far do the slow calls sit from

@@ -557,9 +557,11 @@ def finetune(
     progress
         Show the ``Trainer`` progress bar.
 
-    The returned pipeline is the saved checkpoint reloaded from disk (see the module
-    docstring). TF32 is enabled for training on Ampere or newer GPUs, as Chronos does, and the
-    previous float32 precision is restored afterwards.
+    The signature is long because it is ``Chronos2Pipeline.fit``'s, with every training
+    setting that the series varies spelled out as a keyword and none of them hidden in a
+    config object. The returned pipeline is the saved checkpoint reloaded from disk (see the
+    module docstring). TF32 is enabled for training on Ampere or newer GPUs, as Chronos does,
+    and the previous float32 precision is restored afterwards.
     """
     _check_finetune_arguments(
         pipeline=pipeline,
@@ -580,12 +582,12 @@ def finetune(
     )
     output_dir = _prepare_output_dir(Path(output_dir), overwrite=overwrite)
     recorder = _TrainingRecorder()
-    callbacks: list[TrainerCallback] = [recorder]
-    validation_kwargs: dict[str, Any] = {}
-    if val_inputs is not None:
-        validation_kwargs = {"eval_steps": eval_steps, "save_steps": eval_steps}
-        if early_stopping_patience is not None:
-            callbacks.append(EarlyStoppingCallback(early_stopping_patience=early_stopping_patience))
+    callbacks, validation_kwargs = _validation_setup(
+        recorder,
+        validate=val_inputs is not None,
+        eval_steps=eval_steps,
+        early_stopping_patience=early_stopping_patience,
+    )
     device = pipeline.model.device
     logger.info(
         "Fine-tuning (%s) on %s: %d training series, %s validation series, %d steps.",
@@ -647,6 +649,22 @@ def finetune(
     )
     logger.info("Fine-tuning done: %s", result.summary())
     return result
+
+
+def _validation_setup(
+    recorder: TrainerCallback,
+    *,
+    validate: bool,
+    eval_steps: int,
+    early_stopping_patience: int | None,
+) -> tuple[list[TrainerCallback], dict[str, Any]]:
+    """Callbacks and ``fit`` keywords: validate and checkpoint on the same steps, or neither."""
+    callbacks: list[TrainerCallback] = [recorder]
+    if not validate:
+        return callbacks, {}
+    if early_stopping_patience is not None:
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=early_stopping_patience))
+    return callbacks, {"eval_steps": eval_steps, "save_steps": eval_steps}
 
 
 def _check_finetune_arguments(
@@ -715,15 +733,16 @@ def _float32_precision_restored(*, enable_tf32: bool) -> Iterator[None]:
     settings. Without this, every later GPU forecast would run in TF32 (measured: up to 0.3%
     different), and a second fine-tune in the same process would train without TF32.
     """
+    # ``fp32_precision`` is newer than the type stubs PyTorch ships, hence getattr/setattr.
     backends = (torch.backends, torch.backends.cuda.matmul, torch.backends.cudnn)
-    saved = [backend.fp32_precision for backend in backends]
+    saved = [getattr(backend, "fp32_precision") for backend in backends]  # noqa: B009
     if enable_tf32:
-        torch.backends.fp32_precision = "tf32"
+        setattr(torch.backends, "fp32_precision", "tf32")  # noqa: B010
     try:
         yield
     finally:
         for backend, value in zip(backends, saved, strict=True):
-            backend.fp32_precision = value
+            setattr(backend, "fp32_precision", value)  # noqa: B010
 
 
 def _reset_peak_memory(device: torch.device) -> None:

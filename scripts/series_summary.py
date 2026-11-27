@@ -6,6 +6,9 @@ this script builds it from the results the notebooks and benchmarks already wrot
 
 - ``results/12_series_summary.csv``: one row per lever, with the effect as it is printed in the
   article, what it was measured as, and the part that measured it.
+- ``results/12_two_readings.csv``: every comparison between two models that the series quotes,
+  read both ways from the per-window (or per-store) errors the notebooks saved: the skill on a
+  typical window and the skill on the total error, each with its bootstrap interval.
 - ``results/12_decision_path.csv`` and ``results/figures/12_decision_path.png``: the order in
   which to pull the levers on a new series, each step with the measurement that backs it.
 
@@ -20,10 +23,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from decimal import ROUND_HALF_UP, Decimal
+from typing import NamedTuple
 
 import pandas as pd
 
 from c2p.config import Paths, get_paths
+from c2p.eval import MODEL_COL, WINDOW_COL, skill_score
+from c2p.experiments import DAY_AHEAD_BLOCK
 from c2p.plots.architecture import plot_decision_path
 from c2p.plotting import save_figure
 from c2p.results import load_results, save_results
@@ -31,7 +37,72 @@ from c2p.results import load_results, save_results
 MINUS = "\u2212"  # the articles write negative numbers with a true minus sign
 TIMES = "\u00d7"
 CONTEXT = 2048  # the context length of the day-ahead protocol
-SUMMARY_COLUMNS = ["part", "lever", "effect", "measured_as"]
+SUMMARY_COLUMNS = ["part", "lever", "effect", "total", "measured_as"]
+NOT_A_COMPARISON = "n/a"  # rows of the summary that are not a skill of one model over another
+STORE = "item_id"
+
+
+class Comparison(NamedTuple):
+    """One model against another on the errors saved in ``results/<metrics>.csv``."""
+
+    part: int
+    metrics: str
+    model: str
+    baseline: str
+    block_length: int = DAY_AHEAD_BLOCK  # 365 consecutive days are resampled in weeks
+    unit: str = WINDOW_COL
+    metric: str = "WQL"
+    more: str | None = None  # a second file whose rows join the first (another model)
+
+
+COMPARISONS = (
+    Comparison(2, "02_backtest_metrics", "chronos-2", "seasonal_naive"),
+    Comparison(2, "02_backtest_metrics", "chronos-bolt", "seasonal_naive"),
+    Comparison(2, "02_backtest_metrics", "mstl", "seasonal_naive"),
+    Comparison(2, "02_backtest_metrics", "chronos-2", "chronos-bolt"),
+    Comparison(2, "02_backtest_metrics", "chronos-2", "mstl"),
+    Comparison(2, "02_backtest_metrics", "chronos-2-synth", "chronos-2", more="02_synth_metrics"),
+    Comparison(3, "05_epf_de_metrics", "known_future", "univariate", block_length=1),
+    Comparison(3, "05_epf_de_metrics", "past_only", "univariate", block_length=1),
+    Comparison(3, "05_price_ladder_metrics", "TSO forecasts, no calendar", "none"),
+    Comparison(3, "05_price_ladder_metrics", "+past generation", "TSO forecasts, no calendar"),
+    Comparison(3, "05_operator_metrics", "operator forecast, corrected", "operator forecast"),
+    Comparison(3, "05_operator_metrics", "history only", "operator forecast", metric="WAPE"),
+    Comparison(4, "08_comparison_metrics", "lora_r8", "zero-shot"),
+    Comparison(4, "08_comparison_metrics", "lora_tuned", "zero-shot"),
+    Comparison(4, "08_comparison_metrics", "full", "zero-shot"),
+    Comparison(4, "08_comparison_metrics", "lora_tuned", "lora_r8"),
+    Comparison(4, "08_comparison_metrics", "full", "lora_r8"),
+    Comparison(4, "07_budget_validation_metrics", "4,000 steps, lr 1e-4", "zero-shot"),
+    Comparison(4, "07_budget_test_metrics", "4,000 steps, lr 1e-4", "zero-shot"),
+    Comparison(4, "08_forgetting_metrics", "lora_tuned", "zero-shot", block_length=1),
+    Comparison(5, "bench_variants_metrics", "chronos-2-small", "chronos-2"),
+    Comparison(5, "bench_variants_metrics", "chronos-2-bf16", "chronos-2"),
+    Comparison(6, "09_conformal_metrics", "conformal_additive", "zero-shot"),
+    Comparison(6, "09_conformal_metrics", "conformal_rolling", "zero-shot"),
+    Comparison(6, "09_conformal_metrics", "conformal_aci", "zero-shot"),
+    Comparison(
+        7, "10_daily_total_metrics", "hourly quantiles, summed", "daily series, forecast directly"
+    ),
+    Comparison(
+        7,
+        "10_week_ahead_metrics",
+        "daily series, forecast directly",
+        "hourly quantiles, summed",
+        block_length=1,
+    ),
+    Comparison(
+        7, "10_panel_store_errors", "+known covariates", "history only", block_length=1, unit=STORE
+    ),
+    Comparison(
+        7,
+        "10_panel_store_errors",
+        "+known covariates, cross-learning",
+        "+known covariates",
+        block_length=1,
+        unit=STORE,
+    ),
+)
 # Result name -> (row of the table, words of the decision path).
 FINE_TUNES = {
     "lora_r8": ("LoRA rank 8, library defaults", "LoRA at the library defaults"),
@@ -56,9 +127,63 @@ def signed(fraction: float, decimals: int = 1) -> str:
     return f"{MINUS if fraction < 0 else '+'}{half_up(100 * fraction, decimals)}"
 
 
-def interval(row: pd.Series) -> str:
-    """``+1.8% [+0.5, +3.1]`` from a row with ``skill``, ``ci_low`` and ``ci_high``."""
-    return f"{signed(row['skill'])}% [{signed(row['ci_low'])}, {signed(row['ci_high'])}]"
+def interval(row: pd.Series, prefix: str = "") -> str:
+    """``+1.8% [+0.5, +3.1]`` from a row with ``skill``, ``ci_low`` and ``ci_high``.
+
+    ``prefix="total_"`` reads the same three columns of the total-error skill instead.
+    """
+    low, high = signed(row[f"{prefix}ci_low"]), signed(row[f"{prefix}ci_high"])
+    return f"{signed(row[f'{prefix}skill'])}% [{low}, {high}]"
+
+
+def two_readings(paths: Paths) -> pd.DataFrame:
+    """Every comparison of :data:`COMPARISONS`, on the typical window and on the total error.
+
+    Both readings come from the same saved errors and the same bootstrap resamples. A unit
+    (a window, or a store) is scored when every model of its file has a positive error on it,
+    which is the rule notebook 10 applies to stores that were closed for the whole test.
+    """
+    rows = []
+    for comparison in COMPARISONS:
+        errors = load_results(comparison.metrics, paths)
+        if comparison.more is not None:
+            errors = pd.concat([errors, load_results(comparison.more, paths)], ignore_index=True)
+        positive = errors[comparison.metric] > 0
+        scored = positive.groupby(errors[comparison.unit]).transform("all")
+        pair = errors[scored & errors[MODEL_COL].isin([comparison.model, comparison.baseline])]
+        readings = {
+            aggregate: skill_score(
+                pair,
+                model=comparison.model,
+                baseline=comparison.baseline,
+                metric=comparison.metric,
+                block_length=comparison.block_length,
+                unit=comparison.unit,
+                aggregate=aggregate,
+            )
+            for aggregate in ("geometric", "total")
+        }
+        typical, total = readings["geometric"], readings["total"]
+        rows.append(
+            {
+                "part": comparison.part,
+                "metrics": comparison.metrics,
+                "model": comparison.model,
+                "baseline": comparison.baseline,
+                "metric": comparison.metric,
+                "unit": comparison.unit,
+                "n_units": typical.n_units,
+                "block_length": comparison.block_length,
+                "win_rate": typical.win_rate,
+                "skill": typical.skill,
+                "ci_low": typical.ci_low,
+                "ci_high": typical.ci_high,
+                "total_skill": total.skill,
+                "total_ci_low": total.ci_low,
+                "total_ci_high": total.ci_high,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 class Measurements:
@@ -71,6 +196,18 @@ class Measurements:
         """``results/<name>.csv``, indexed by the column ``index`` when one is given."""
         frame = load_results(name, self.paths)
         return frame.set_index(index) if index else frame
+
+    def total(self, metrics: str, model: str, baseline: str) -> str:
+        """The total-error skill of one comparison of ``12_two_readings.csv``, as printed."""
+        readings = self.table("12_two_readings")
+        row = readings[
+            (readings["metrics"] == metrics)
+            & (readings["model"] == model)
+            & (readings["baseline"] == baseline)
+        ]
+        if len(row) != 1:
+            raise KeyError(f"12_two_readings has no single row for {model!r} vs {baseline!r}.")
+        return interval(row.iloc[0], prefix="total_")
 
     def skill(self, name: str, model: str, comparison: str | None = None) -> pd.Series:
         """The row of ``model`` in a skill table (of one ``comparison`` when the file has many)."""
@@ -128,80 +265,106 @@ def summary_rows(m: Measurements) -> pd.DataFrame:
             "Missing hours left as NaN on the regular grid, not dropped",
             f"WQL {signed(messy['rows_dropped_freq'], 0)}% if dropped, "
             f"{signed(messy['gaps_nan'], 0)}% as NaN",
+            NOT_A_COMPARISON,
             "WQL against the clean series, Spanish load, 40 windows",
         ),
         (
             2,
             "Zero-shot, nothing tuned",
             interval(zero_shot),
+            m.total("02_backtest_metrics", "chronos-2", "seasonal_naive"),
             "WQL against the seasonal naive, Spanish load",
         ),
         (
             2,
             "Context 64 → 2,048 hours",
             f"{pct(context[64])} → {pct(context[CONTEXT])}",
+            NOT_A_COMPARISON,
             "skill over the seasonal naive, Spanish load",
+        ),
+        (
+            2,
+            "Chronos-2 instead of Chronos-Bolt",
+            interval(m.skill("02_head_to_head", "chronos-2")),
+            m.total("02_backtest_metrics", "chronos-2", "chronos-bolt"),
+            "WQL against Chronos-Bolt, Spanish load",
         ),
         (
             3,
             "Covariates the market knows in advance",
             interval(m.skill("05_epf_de_skill", "known_future")),
+            m.total("05_epf_de_metrics", "known_future", "univariate"),
             "WQL against no covariates, EPF-DE price",
         ),
         (
             3,
             "The operator's forecasts as covariates",
             interval(m.skill("05_price_ladder_skill", "TSO forecasts, no calendar")),
+            m.total("05_price_ladder_metrics", "TSO forecasts, no calendar", "none"),
             "WQL against no covariates, Spanish price",
         ),
         (
             3,
             "Forecasting the operator's error instead of the load",
             interval(m.skill("05_operator_skill", "operator forecast, corrected")),
+            m.total("05_operator_metrics", "operator forecast, corrected", "operator forecast"),
             "WQL against the operator's forecast, Spanish load",
         ),
     ]
     tuned = m.table("08_comparison_skill", "model")
     rows += [
-        (4, label, interval(tuned.loc[model]), "WQL against zero-shot, Spanish load")
+        (
+            4,
+            label,
+            interval(tuned.loc[model]),
+            m.total("08_comparison_metrics", model, "zero-shot"),
+            "WQL against zero-shot, Spanish load",
+        )
         for model, (label, _) in FINE_TUNES.items()
         if model in tuned.index
     ]
+    summed, direct = "hourly quantiles, summed", "daily series, forecast directly"
     rows += [
         (
             5,
             "A GPU instead of 8 CPU cores",
             f"{half_up(m.speed('cuda') / m.speed('cpu'))}{TIMES} the throughput",
+            NOT_A_COMPARISON,
             "series per second, same model and context",
         ),
         (
             5,
             "`chronos-2-small` instead of `chronos-2`",
             f"{half_up(small_speed)}{TIMES} the throughput, {interval(small)}",
+            m.total("bench_variants_metrics", "chronos-2-small", "chronos-2"),
             "WQL against the base model, Spanish load",
         ),
         (
             6,
             "Conformal correction, learned once",
             f"{pct(coverage['zero-shot'])} → {pct(coverage['conformal_additive'])}",
+            NOT_A_COMPARISON,
             "coverage of the 80% interval over the year",
         ),
         (
             6,
             "Conformal correction, updated with every forecast",
             f"{pct(worst['zero-shot'])} → {pct(worst['conformal_aci'])}",
+            NOT_A_COMPARISON,
             "coverage of the 80% interval in the worst month",
         ),
         (
             7,
             "Summing the hourly forecast instead of forecasting the daily total",
-            interval(m.skill("10_paired_skill", "hourly quantiles, summed", "tomorrow's total")),
+            interval(m.skill("10_paired_skill", summed, "tomorrow's total")),
+            m.total("10_daily_total_metrics", summed, direct),
             "WQL of tomorrow's total against the daily series",
         ),
         (
             7,
-            "Promotions and holidays known in advance, 1,115 stores",
+            "Opening days, promotions and holidays known in advance, 1,115 stores",
             interval(m.skill("10_paired_skill", "+known covariates", "panel")),
+            m.total("10_panel_store_errors", "+known covariates", "history only"),
             "WQL against history only, stores as units",
         ),
         (
@@ -209,6 +372,7 @@ def summary_rows(m: Measurements) -> pd.DataFrame:
             "Embeddings instead of raw values to flag a frozen feed",
             f"AUC {half_up(frozen['raw window'], 2)} → "
             f"{half_up(frozen['embedding (forecast)'], 2)}",
+            NOT_A_COMPARISON,
             "last 12 hours repeated, 365 windows",
         ),
     ]
@@ -220,7 +384,7 @@ def summary_rows(m: Measurements) -> pd.DataFrame:
 def measured(m: Measurements) -> dict[str, str]:
     """The sentence under each step of the decision path, from the same files as the table."""
     messy, context = m.messy(), m.context()
-    skill = m.table("02_skill_table", "model")["skill"]
+    skill = m.table("02_skill_table", "model")
     ladder = m.table("05_price_ladder_skill", "model")["skill"]
     corrected = m.skill("05_operator_skill", "operator forecast, corrected")
     tuned = m.table("08_comparison_skill", "model")
@@ -236,8 +400,11 @@ def measured(m: Measurements) -> dict[str, str]:
             f"{signed(messy['gaps_nan'], 0)}%"
         ),
         "baseline": (
-            f"zero-shot Chronos-2 cut the seasonal naive's error by {pct(skill['chronos-2'], 0)}; "
-            f"the grid operator's own forecast, by {pct(skill['operator_forecast'], 0)}"
+            f"zero-shot Chronos-2's error was {pct(skill.loc['chronos-2', 'skill'], 0)} below "
+            f"the seasonal naive's on a typical day and "
+            f"{pct(skill.loc['chronos-2', 'total_skill'], 0)} below over the year; the grid "
+            f"operator's own forecast, {pct(skill.loc['operator_forecast', 'total_skill'], 0)} "
+            f"below"
         ),
         "covariates": (
             f"on price, the operator's forecasts {signed(ladder['TSO forecasts, no calendar'])}% "
@@ -274,6 +441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Write the summary table, the decision path and its figure."""
     del argv  # no options: the inputs are the results folder
     paths = get_paths()
+    print("Saved", save_results(two_readings(paths), "12_two_readings", paths).name)
     m = Measurements(paths)
     table = summary_rows(m)
     steps = measured(m)

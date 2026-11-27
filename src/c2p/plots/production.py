@@ -35,7 +35,13 @@ from c2p.plotting import (
     style_context,
 )
 
-__all__ = ["device_label", "plot_cost_per_million", "plot_coverage_by_month", "plot_throughput"]
+__all__ = [
+    "device_label",
+    "plot_cost_per_million",
+    "plot_coverage_by_month",
+    "plot_latency_spread",
+    "plot_throughput",
+]
 
 _CPU_COLOR = "#8c8b82"
 _GPU_COLOR = BLUE

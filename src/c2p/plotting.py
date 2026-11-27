@@ -67,6 +67,12 @@ from c2p.schema import (
 )
 
 __all__ = [
+    "AXIS_COLOR",
+    "BLUE",
+    "GRID_COLOR",
+    "INK_PRIMARY",
+    "INK_SECONDARY",
+    "ISSUE_COLOR",
     "MODEL_COLORS",
     "PALETTE",
     "STYLE",
